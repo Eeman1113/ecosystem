@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ecosystem — A Self-Sustaining Evolving World</title>
+  <meta name="description" content="A real-time browser-based evolving ecosystem with plants, herbivores, predators, biomes, weather, day/night, seasons, and heritable genetics." />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ LEFT COLUMN ============ -->
+  <aside class="col">
+
+    <div class="panel">
+      <h1>Ecosystem</h1>
+      <p class="subtitle">A self-sustaining world with evolution, day/night, seasons, weather, and four interlocking species. Open the chart to watch traits drift over generations.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Time &amp; Speed</h2>
+      <div class="controls">
+        <button id="btnPause" class="primary">Pause</button>
+        <button id="btnSpeed">1×</button>
+        <button id="btnReset" class="danger">Reset</button>
+      </div>
+      <div class="row" style="margin-top:8px"><span>tick</span><span class="v" id="kTick">0</span></div>
+      <div class="row"><span>day</span><span class="v" id="kDay">0</span></div>
+      <div class="row"><span>year</span><span class="v" id="kYear">0</span></div>
+      <div class="row"><span>season</span><span class="v" id="kSeason">spring</span></div>
+      <div class="row"><span>weather</span><span class="v" id="kWeather">clear</span></div>
+      <div class="row"><span>temperature</span><span class="v" id="kTemp">0°</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Seed</h2>
+      <div class="controls">
+        <button data-seed="rabbit">+10 🐇</button>
+        <button data-seed="deer">+5 🦌</button>
+        <button data-seed="fox">+5 🦊</button>
+        <button data-seed="wolf">+3 🐺</button>
+      </div>
+      <div class="small" style="margin-top:8px">Click world to drop fertilizer (boosts soil &amp; plants).</div>
+    </div>
+
+    <div class="panel">
+      <h2>Tuning</h2>
+      <div class="slider-row">
+        <label>plant rate</label>
+        <input id="sPlant" type="range" min="0.2" max="3" step="0.05" value="1" />
+        <span class="v" id="vPlant">1.00</span>
+      </div>
+      <div class="slider-row">
+        <label>rabbit metab</label>
+        <input id="sRabbit" type="range" min="0.4" max="2.5" step="0.05" value="1" />
+        <span class="v" id="vRabbit">1.00</span>
+      </div>
+      <div class="slider-row">
+        <label>fox metab</label>
+        <input id="sFox" type="range" min="0.4" max="2.5" step="0.05" value="1" />
+        <span class="v" id="vFox">1.00</span>
+      </div>
+      <div class="slider-row">
+        <label>mutation</label>
+        <input id="sMut" type="range" min="0.2" max="3" step="0.1" value="1" />
+        <span class="v" id="vMut">1.00</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Save / Load</h2>
+      <div class="controls">
+        <button id="btnSave">Save</button>
+        <button id="btnLoad">Load</button>
+        <button id="btnSnap">📷 PNG</button>
+      </div>
+      <div class="small" style="margin-top:6px">State is stored in your browser (localStorage).</div>
+    </div>
+
+    <div class="panel">
+      <h2>Hotkeys</h2>
+      <div class="small">
+        <span class="kbd">Space</span> pause<br>
+        <span class="kbd">+</span> / <span class="kbd">-</span> zoom<br>
+        <span class="kbd">R</span> reset · <span class="kbd">F</span> follow<br>
+        Click an animal to inspect.
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- ============ CENTER STAGE ============ -->
+  <main id="stage">
+    <canvas id="world"></canvas>
+    <div id="hover-tip"></div>
+  </main>
+
+  <!-- ============ RIGHT COLUMN ============ -->
+  <aside class="col">
+
+    <div class="panel">
+      <h2>Population</h2>
+      <div class="legend"><span class="swatch" style="background:var(--grass)"></span><span>plants (cover)</span><span class="v" id="cPlants">0%</span></div>
+      <div class="legend"><span class="swatch" style="background:var(--rabbit)"></span><span>rabbits</span><span class="v" id="cRabbit">0</span></div>
+      <div class="legend"><span class="swatch" style="background:var(--deer)"></span><span>deer</span><span class="v" id="cDeer">0</span></div>
+      <div class="legend"><span class="swatch" style="background:var(--fox)"></span><span>foxes</span><span class="v" id="cFox">0</span></div>
+      <div class="legend"><span class="swatch" style="background:var(--wolf)"></span><span>wolves</span><span class="v" id="cWolf">0</span></div>
+      <canvas id="popChart" class="chart tall"></canvas>
+    </div>
+
+    <div class="panel">
+      <h2>Evolution — Trait Drift</h2>
+      <div class="tabs" id="speciesTabs">
+        <div class="tab active" data-species="rabbit">rabbit</div>
+        <div class="tab" data-species="deer">deer</div>
+        <div class="tab" data-species="fox">fox</div>
+        <div class="tab" data-species="wolf">wolf</div>
+      </div>
+      <canvas id="traitChart" class="chart tall"></canvas>
+      <div class="legend-traits" id="traitLegend"></div>
+      <div class="small" style="margin-top:6px">Each line is the population mean of one heritable gene, normalized to its [min, max] range.</div>
+    </div>
+
+    <div class="panel inspector">
+      <h2>Inspector</h2>
+      <div id="inspectorBody">
+        <div class="small">Click any animal to inspect its genome and lineage.</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>About</h2>
+      <div class="small">
+        Closed energy loop: sunlight → plants → herbivores → predators → soil → plants. Genes mutate at birth; populations drift over generations. Built from scratch in vanilla JS — no libraries.
+      </div>
+    </div>
+
+    <div class="footer">
+      <a href="https://github.com/Eeman1113" target="_blank" rel="noopener">github / Eeman1113</a>
+    </div>
+
+  </aside>
+
+</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

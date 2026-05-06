@@ -1,0 +1,317 @@
+/* =============================================================
+   ECOSYSTEM — UI styling. Dark theme, monospace, dense info layout.
+   Three-column grid: left controls, center world, right analytics.
+============================================================= */
+
+:root {
+  --bg:        #08090c;
+  --panel:     #11141a;
+  --panel-2:   #161a22;
+  --border:    #232934;
+  --text:      #e1e6ee;
+  --muted:     #7d8b99;
+  --accent:    #8ed1ff;
+
+  --grass:     #5aaa55;
+  --rabbit:    #ddd2bb;
+  --deer:      #b48345;
+  --fox:       #d6552a;
+  --wolf:      #93a8d2;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow: hidden;
+  user-select: none;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: 280px 1fr 340px;
+  grid-template-rows: 100vh;
+  gap: 10px;
+  padding: 10px;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #2a313d transparent;
+}
+.col::-webkit-scrollbar { width: 6px; }
+.col::-webkit-scrollbar-thumb { background: #2a313d; border-radius: 3px; }
+
+#stage {
+  position: relative;
+  background: #04060a;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  min-width: 0;
+}
+#stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.panel + .panel { margin-top: 0; }
+
+h1 {
+  font-size: 13px;
+  letter-spacing: 1.2px;
+  margin: 0 0 6px;
+  color: #fff;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+h2 {
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-weight: 500;
+  text-transform: uppercase;
+}
+h3 {
+  font-size: 11px;
+  margin: 8px 0 4px;
+  color: #c5cdd6;
+  font-weight: 500;
+}
+
+.subtitle {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0 0 6px;
+  line-height: 1.4;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  padding: 2px 0;
+}
+.row .v {
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  padding: 2px 0;
+}
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+}
+.legend .v { margin-left: auto; color: #fff; font-variant-numeric: tabular-nums; }
+
+button {
+  background: #1a212c;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+button:hover { background: #232c39; border-color: #2f3a47; }
+button.primary {
+  background: #1f3a55;
+  border-color: #2c537a;
+  color: #d6e9ff;
+}
+button.primary:hover { background: #28486a; }
+button.danger { background: #3a1f1f; border-color: #6a3030; color: #ffc8c8; }
+button.danger:hover { background: #4a2828; }
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  padding: 2px 0;
+}
+.slider-row label {
+  flex: 0 0 92px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.slider-row input[type="range"] {
+  flex: 1;
+  appearance: none;
+  height: 4px;
+  background: #1c2330;
+  border-radius: 2px;
+  outline: none;
+}
+.slider-row input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px; height: 12px;
+  background: #6f9ec0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.slider-row .v {
+  flex: 0 0 32px;
+  text-align: right;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+}
+
+canvas.chart {
+  width: 100%;
+  height: 110px;
+  display: block;
+  background: #06080b;
+  border-radius: 4px;
+  margin-top: 6px;
+}
+canvas.chart.tall { height: 140px; }
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.tab {
+  flex: 1;
+  font-size: 10px;
+  padding: 4px 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.12s;
+}
+.tab:hover { color: var(--text); }
+.tab.active {
+  background: #1a2533;
+  color: var(--accent);
+  border-color: #2f4a66;
+}
+
+.kbd {
+  background: #1c2330;
+  border: 1px solid #2a3340;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+  color: #ddd;
+}
+
+.small {
+  font-size: 10.5px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.inspector .stat {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 6px;
+  font-size: 11px;
+  padding: 1px 0;
+}
+.inspector .stat .label { color: var(--muted); }
+.inspector .stat .val { color: #fff; font-variant-numeric: tabular-nums; }
+.inspector .gene-bar {
+  position: relative;
+  height: 4px;
+  background: #1c2330;
+  border-radius: 2px;
+  margin: 2px 0 4px;
+}
+.inspector .gene-bar > i {
+  position: absolute;
+  height: 100%;
+  background: #6f9ec0;
+  border-radius: 2px;
+}
+.inspector .gene {
+  font-size: 10px;
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+}
+.inspector .gene b { color: #fff; font-weight: normal; }
+
+.legend-traits {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 8px;
+  font-size: 10px;
+  margin-top: 4px;
+}
+.legend-traits div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.footer {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+  padding: 4px 0;
+}
+.footer a { color: var(--accent); text-decoration: none; }
+
+#hover-tip {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(0,0,0,0.85);
+  border: 1px solid #2a3340;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 10.5px;
+  color: #fff;
+  white-space: pre;
+  z-index: 100;
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; height: auto; min-height: 100vh; }
+  html, body { overflow: auto; }
+  #stage { height: 60vh; }
+}
