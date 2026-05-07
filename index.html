@@ -94,6 +94,35 @@
   <main id="stage">
     <canvas id="world"></canvas>
     <div id="hover-tip"></div>
+
+    <!-- zoom controls (top-right of stage) -->
+    <div id="zoomCtrl" class="stage-overlay top-right">
+      <button id="zIn"  title="Zoom in">＋</button>
+      <button id="zReset" title="Reset zoom">⟳</button>
+      <button id="zOut" title="Zoom out">−</button>
+      <div id="zoomLabel">100%</div>
+    </div>
+
+    <!-- toolbar (bottom of stage) -->
+    <div id="toolbar" class="stage-overlay bottom">
+      <div class="tool-group" data-cat="cursor"></div>
+      <div class="tool-divider"></div>
+      <div class="tool-group" data-cat="life"></div>
+      <div class="tool-divider"></div>
+      <div class="tool-group" data-cat="boon"></div>
+      <div class="tool-divider"></div>
+      <div class="tool-group" data-cat="doom"></div>
+      <div class="tool-divider"></div>
+      <div class="tool-group" data-cat="terra"></div>
+      <div class="tool-divider"></div>
+      <div class="tool-brush-size">
+        <label>brush</label>
+        <input id="brushSize" type="range" min="1" max="14" value="4" />
+        <span id="brushSizeLabel">4</span>
+      </div>
+    </div>
+
+    <!-- brush ring overlay (drawn in JS) -->
   </main>
 
   <!-- ============ RIGHT COLUMN ============ -->

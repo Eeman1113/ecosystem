@@ -28,6 +28,7 @@ export class World {
     this.biome = new Uint8Array(cols * rows);
     this.soil  = new Float32Array(cols * rows); // nutrients 0..1
     this.moist = new Float32Array(cols * rows); // moisture 0..1
+    this.fire  = new Float32Array(cols * rows); // 0 idle, >0 burning intensity
 
     // time
     this.tick = 0;
@@ -182,9 +183,61 @@ export class World {
   step() {
     this.tick++;
     this.stepWeather();
+    this.stepFire();
     // gentle moisture diffusion every few ticks (so water tiles
     // gradually wet their neighbors and droughts dry rock first).
     if (this.tick % 30 === 0) this.diffuseMoisture();
+  }
+
+  // -------- fire spread --------
+  // Fire intensity decays each tick; spreads to dry plant cells with a
+  // probability that scales with intensity and inverse moisture. Rain
+  // extinguishes faster. Burning increases soil afterward (ash).
+  stepFire() {
+    const { cols, rows } = this;
+    const isRain = this.weather === 'rain';
+    const decay = isRain ? 0.04 : 0.012;
+    for (let i = 0; i < this.fire.length; i++) {
+      if (this.fire[i] <= 0) continue;
+      // intensity decay
+      this.fire[i] -= decay;
+      if (this.fire[i] < 0.02) {
+        // ash → soil
+        if (this.biome[i] !== BIOME.WATER) {
+          this.soil[i] = Math.min(1, this.soil[i] + 0.15);
+        }
+        this.fire[i] = 0;
+      }
+    }
+    // spread pass — process some random cells
+    const spreadCount = (cols * rows) / 60 | 0;
+    for (let s = 0; s < spreadCount; s++) {
+      const i = ((Math.random() * cols * rows) | 0);
+      const f = this.fire[i];
+      if (f <= 0.15) continue;
+      const x = i % cols, y = (i / cols) | 0;
+      const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+      const [dx, dy] = dirs[(Math.random() * 4) | 0];
+      const nx = x + dx, ny = y + dy;
+      if (!this.inBounds(nx, ny)) continue;
+      const ni = this.idx(nx, ny);
+      if (this.biome[ni] === BIOME.WATER) continue;
+      if (this.fire[ni] > 0.1) continue;
+      const dryness = 1 - this.moist[ni];
+      const p = f * dryness * (isRain ? 0.05 : 0.55);
+      if (Math.random() < p) {
+        this.fire[ni] = Math.max(this.fire[ni], 0.55 + Math.random() * 0.4);
+      }
+    }
+  }
+
+  // Public API for tools — ignite a cell or radius.
+  ignite(x, y, intensity = 1.0) {
+    const cx = Math.max(0, Math.min(this.cols - 1, Math.floor(x)));
+    const cy = Math.max(0, Math.min(this.rows - 1, Math.floor(y)));
+    const i = this.idx(cx, cy);
+    if (this.biome[i] === BIOME.WATER) return;
+    this.fire[i] = Math.max(this.fire[i], intensity);
   }
 
   diffuseMoisture() {

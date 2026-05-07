@@ -122,6 +122,16 @@ export class Animal {
       this.thirst = Math.max(0, this.thirst - 0.06);
     }
 
+    // ----- fire damage: standing in a burning cell hurts -----
+    {
+      const cx = clamp(Math.floor(this.x), 0, world.cols - 1);
+      const cy = clamp(Math.floor(this.y), 0, world.rows - 1);
+      const fi = world.idx(cx, cy);
+      if (world.fire[fi] > 0.05) {
+        this.energy -= 0.06 * world.fire[fi];
+      }
+    }
+
     // ----- graze if prey -----
     if (this.spec.kind === 'prey') {
       const cx = clamp(Math.floor(this.x), 0, world.cols - 1);

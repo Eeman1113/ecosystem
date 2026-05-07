@@ -11,6 +11,7 @@ import { Renderer, FX } from './render.js';
 import { PopulationChart, TraitChart } from './charts.js';
 import { populationMeans, randomGenome } from './genetics.js';
 import { UI } from './ui.js';
+import { ToolSystem } from './tools.js';
 import { rand, randi, clamp } from './utils.js';
 
 class Sim {
@@ -26,8 +27,12 @@ class Sim {
     this.tuning = { sPlant: 1, sRabbit: 1, sFox: 1, sMut: 1 };
 
     this.paused = false;
-    this.speed = 1;
+    this.speed = 2;
     this.selectedId = null;
+
+    this.tools = new ToolSystem(this);
+    this.lightningFlash = 0;
+    this._biomeDirty = false;
 
     this._initWorld();
   }
@@ -45,6 +50,7 @@ class Sim {
 
     if (this.renderer) this.renderer.setWorld(this.world);
     else this.renderer = new Renderer(this.canvas, this.world);
+    this.renderer._sim = this;
     this.renderer.fitCanvas();
     this.renderer.panX = 0;
     this.renderer.panY = 0;
@@ -89,12 +95,17 @@ class Sim {
   }
   zoomAt(sx, sy, factor) {
     const oldZoom = this.renderer.zoom;
-    let newZoom = clamp(oldZoom * factor, 0.5, 4);
+    let newZoom = clamp(oldZoom * factor, 0.4, 6);
     factor = newZoom / oldZoom;
     // keep the world point under the cursor stable
     this.renderer.panX = sx - (sx - this.renderer.panX) * factor;
     this.renderer.panY = sy - (sy - this.renderer.panY) * factor;
     this.renderer.zoom = newZoom;
+  }
+  resetZoom() {
+    this.renderer.zoom = 1;
+    this.renderer.panX = 0;
+    this.renderer.panY = 0;
   }
   followSelected() {
     if (this.selectedId !== null) this.renderer.followId = this.selectedId;
@@ -219,6 +230,15 @@ class Sim {
     // particles
     this.fx.step();
 
+    // tool/lightning fade
+    this.tools.step();
+
+    // rebuild biome image if terraform tool was used
+    if (this._biomeDirty) {
+      this.renderer.buildBiomeImage();
+      this._biomeDirty = false;
+    }
+
     // periodic chart updates
     if (this.world.tick % 4 === 0) this._updateCharts();
   }
@@ -293,6 +313,7 @@ class Sim {
     this.popChart.draw();
     this.traitChart.draw();
     this._renderHud();
+    if (this.ui) this.ui.refreshZoomLabel();
     requestAnimationFrame(() => this.loop());
   }
 }

@@ -113,6 +113,18 @@ export class Plants {
         continue;
       }
 
+      // Burning plants lose energy fast and may die.
+      if (w.fire[i] > 0.1) {
+        const name0 = PLANT_LIST[k - 1];
+        const def0 = CFG.plants[name0];
+        this.energy[i] -= w.fire[i] * 0.04;
+        if (this.energy[i] <= 0) {
+          this.kind[i] = 0;
+          this.energy[i] = 0;
+        }
+        continue;
+      }
+
       // Existing plant: grow toward maxEnergy.
       const name = PLANT_LIST[k - 1];
       const def = CFG.plants[name];

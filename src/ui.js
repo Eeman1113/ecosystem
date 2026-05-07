@@ -7,6 +7,7 @@
 // =============================================================
 
 import { CFG, SPECIES_LIST } from './config.js';
+import { TOOLS } from './tools.js';
 
 export class UI {
   constructor(sim) {
@@ -17,6 +18,8 @@ export class UI {
 
   bind() {
     const sim = this.sim;
+    this._buildToolbar();
+    this._bindZoom();
 
     // top buttons
     document.getElementById('btnPause').onclick = () => {
@@ -83,39 +86,63 @@ export class UI {
       else if (e.key.toLowerCase() === 'f') sim.followSelected();
     });
 
-    // canvas interactions: pan/zoom/click/hover
+    // canvas interactions: pan/zoom/click/hover/brush
     const canvas = sim.renderer.canvas;
-    let dragging = false, dragStart = null;
+    let dragging = false, dragStart = null, painting = false;
+
+    // Right-click is reserved for panning regardless of tool.
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    const isPanGesture = (e) => e.button === 2 || e.altKey || e.metaKey || sim.tools.current === 'cursor';
+
     canvas.addEventListener('mousedown', (e) => {
       const r = canvas.getBoundingClientRect();
       const sx = e.clientX - r.left, sy = e.clientY - r.top;
       dragStart = { sx, sy, panX: sim.renderer.panX, panY: sim.renderer.panY };
       dragging = false;
+      painting = false;
+
+      // If a non-cursor tool, apply on mousedown (and start paint).
+      if (!isPanGesture(e)) {
+        const [wx, wy] = sim.renderer.fromScreen(sx, sy);
+        sim.tools.apply(wx, wy, false);
+        painting = sim.tools.spec().paint;
+      }
     });
+
     canvas.addEventListener('mousemove', (e) => {
       const r = canvas.getBoundingClientRect();
       const sx = e.clientX - r.left, sy = e.clientY - r.top;
-      // hover tip
+      this.mouseScreen = { x: sx, y: sy };
       this._hover(sx, sy);
+
       if (dragStart) {
         const dx = sx - dragStart.sx, dy = sy - dragStart.sy;
-        if (Math.hypot(dx, dy) > 4) {
-          dragging = true;
-          sim.renderer.panX = dragStart.panX + dx;
-          sim.renderer.panY = dragStart.panY + dy;
-          sim.renderer.followId = null;
+        if (painting) {
+          const [wx, wy] = sim.renderer.fromScreen(sx, sy);
+          sim.tools.apply(wx, wy, true);
+        } else if (Math.hypot(dx, dy) > 4) {
+          // Pan only with cursor tool, alt/meta, or right-click
+          if (isPanGesture(e) || e.buttons === 2) {
+            dragging = true;
+            sim.renderer.panX = dragStart.panX + dx;
+            sim.renderer.panY = dragStart.panY + dy;
+            sim.renderer.followId = null;
+          }
         }
       }
     });
+
     canvas.addEventListener('mouseup', (e) => {
       const r = canvas.getBoundingClientRect();
       const sx = e.clientX - r.left, sy = e.clientY - r.top;
-      if (!dragging) {
+      if (!dragging && !painting && sim.tools.current === 'cursor') {
         const [wx, wy] = sim.renderer.fromScreen(sx, sy);
         sim.handleClick(wx, wy, e.shiftKey);
       }
       dragStart = null;
       dragging = false;
+      painting = false;
     });
     canvas.addEventListener('mouseleave', () => {
       this.tipEl.style.display = 'none';
@@ -131,6 +158,71 @@ export class UI {
     }, { passive: false });
 
     window.addEventListener('resize', () => sim.resize());
+  }
+
+  // -------- toolbar --------
+  _buildToolbar() {
+    const sim = this.sim;
+    const groups = {
+      cursor: ['cursor'],
+      life:   ['spawnRabbit', 'spawnDeer', 'spawnFox', 'spawnWolf'],
+      boon:   ['rain', 'fertilize', 'heal', 'plantGrass', 'plantBush', 'plantTree'],
+      doom:   ['lightning', 'fire', 'drought', 'smite'],
+      terra:  ['terraWater', 'terraSand', 'terraPlain', 'terraForest', 'terraRock'],
+    };
+    for (const [cat, ids] of Object.entries(groups)) {
+      const groupEl = document.querySelector(`.tool-group[data-cat="${cat}"]`);
+      if (!groupEl) continue;
+      groupEl.innerHTML = '';
+      for (const id of ids) {
+        const t = TOOLS[id];
+        const btn = document.createElement('button');
+        btn.className = `tool-btn cat-${cat}`;
+        btn.dataset.tool = id;
+        btn.innerHTML = `${t.label}<span class="label-tip">${t.name}</span>`;
+        btn.onclick = () => {
+          sim.tools.current = id;
+          this._refreshToolbar();
+          // Update brush slider to tool default
+          const slider = document.getElementById('brushSize');
+          slider.value = t.size;
+          document.getElementById('brushSizeLabel').textContent = t.size;
+          sim.tools.brushSize = null;
+        };
+        groupEl.appendChild(btn);
+      }
+    }
+    // brush size
+    const slider = document.getElementById('brushSize');
+    const label  = document.getElementById('brushSizeLabel');
+    slider.addEventListener('input', () => {
+      sim.tools.brushSize = parseInt(slider.value, 10);
+      label.textContent = slider.value;
+    });
+    this._refreshToolbar();
+  }
+
+  _refreshToolbar() {
+    const cur = this.sim.tools.current;
+    for (const btn of document.querySelectorAll('.tool-btn')) {
+      btn.classList.toggle('active', btn.dataset.tool === cur);
+    }
+    // Update cursor
+    const canvas = this.sim.renderer.canvas;
+    canvas.style.cursor = cur === 'cursor' ? 'grab' : 'crosshair';
+  }
+
+  // -------- zoom buttons --------
+  _bindZoom() {
+    const sim = this.sim;
+    document.getElementById('zIn').onclick    = () => sim.zoomBy(1.25);
+    document.getElementById('zOut').onclick   = () => sim.zoomBy(1 / 1.25);
+    document.getElementById('zReset').onclick = () => sim.resetZoom();
+  }
+
+  refreshZoomLabel() {
+    const z = this.sim.renderer.zoom;
+    document.getElementById('zoomLabel').textContent = (z * 100 | 0) + '%';
   }
 
   _hover(sx, sy) {

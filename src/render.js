@@ -291,9 +291,15 @@ export class Renderer {
     // 8. Weather
     this._drawWeather(ctx, W, H);
 
+    // 8b. Fire (over plants, under particles)
+    this._drawFire(ctx, cell);
+
     // 9. Seasonal particles (drifting snow / leaves)
     this._spawnSeasonal(fx);
     this._drawParticles(ctx, fx, cell, 'seasonal');
+
+    // 9b. Lightning flash + bolts
+    this._drawLightning(ctx, W, H);
 
     // 10. Day/night tint (smooth gradient)
     this._drawDayNight(ctx, W, H);
@@ -324,6 +330,110 @@ export class Renderer {
 
     // 15. HUD
     this._drawHud(ctx, W, H);
+
+    // 16. Brush ring (over everything)
+    this._drawBrushRing(ctx);
+  }
+
+  // ---------- fire (animated flicker) ----------
+  _drawFire(ctx, cell) {
+    const w = this.world;
+    if (!w.fire) return;
+    const x0 = Math.max(0, Math.floor(-this.panX / cell));
+    const y0 = Math.max(0, Math.floor(-this.panY / cell));
+    const x1 = Math.min(w.cols, Math.ceil((this.canvas.clientWidth - this.panX) / cell));
+    const y1 = Math.min(w.rows, Math.ceil((this.canvas.clientHeight - this.panY) / cell));
+    const t = w.tick * 0.3;
+
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const i = w.idx(x, y);
+        const f = w.fire[i];
+        if (f <= 0.05) continue;
+        const sx = x * cell + this.panX;
+        const sy = y * cell + this.panY;
+        const flicker = 0.7 + 0.3 * Math.sin(t + x * 0.7 + y * 0.5);
+        const intensity = f * flicker;
+
+        // glow
+        const grad = ctx.createRadialGradient(sx + cell/2, sy + cell/2, 0, sx + cell/2, sy + cell/2, cell * 1.4);
+        grad.addColorStop(0,   `rgba(255,180,40,${0.55 * intensity})`);
+        grad.addColorStop(0.5, `rgba(255,80,20,${0.35 * intensity})`);
+        grad.addColorStop(1,   'rgba(120,20,0,0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(sx - cell, sy - cell, cell * 3, cell * 3);
+
+        // flame body (a few stacked rects with random offset)
+        ctx.fillStyle = `rgba(255,220,80,${0.85 * intensity})`;
+        ctx.fillRect(sx + cell * 0.3, sy + cell * 0.1, cell * 0.4, cell * 0.6);
+        ctx.fillStyle = `rgba(255,120,30,${0.85 * intensity})`;
+        ctx.fillRect(sx + cell * 0.2, sy + cell * 0.3, cell * 0.6, cell * 0.5);
+        ctx.fillStyle = `rgba(255,60,0,${0.6 * intensity})`;
+        ctx.fillRect(sx + cell * 0.1, sy + cell * 0.5, cell * 0.8, cell * 0.4);
+      }
+    }
+  }
+
+  // ---------- lightning ----------
+  _drawLightning(ctx, W, H) {
+    // global flash
+    if (this._sim && this._sim.lightningFlash > 0.05) {
+      ctx.fillStyle = `rgba(255,255,255,${this._sim.lightningFlash * 0.6})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+    // bolts
+    if (this._sim && this._sim.tools && this._sim.tools.lightningQueue) {
+      for (const bolt of this._sim.tools.lightningQueue) {
+        const a = bolt.life / bolt.max;
+        const [sx, sy] = this.toScreen(bolt.x, bolt.y);
+        ctx.strokeStyle = `rgba(255,255,255,${a})`;
+        ctx.lineWidth = 2;
+        ctx.shadowColor = '#a6c8ff';
+        ctx.shadowBlur = 14;
+        ctx.beginPath();
+        let cx = sx, cy = 0;
+        ctx.moveTo(cx, cy);
+        while (cy < sy) {
+          cy += 12 + Math.random() * 18;
+          cx += (Math.random() - 0.5) * 30;
+          ctx.lineTo(cx, cy);
+        }
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        // impact ring
+        ctx.strokeStyle = `rgba(255,235,150,${a})`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(sx, sy, (1 - a) * 30 + 6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+  }
+
+  _drawBrushRing(ctx) {
+    if (!this._sim || !this._sim.ui) return;
+    const ms = this._sim.ui.mouseScreen;
+    const tools = this._sim.tools;
+    if (!ms || !tools || tools.current === 'cursor') return;
+    const cell = this.world.cell * this.zoom;
+    const r = tools.size() * cell;
+    const t = tools.spec();
+    const colorMap = {
+      boon:   'rgba(120,220,140,0.85)',
+      doom:   'rgba(255,90,90,0.95)',
+      life:   'rgba(230,210,140,0.85)',
+      terra:  'rgba(220,180,130,0.85)',
+    };
+    const color = colorMap[t.cat] || 'rgba(255,255,255,0.6)';
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.arc(ms.x, ms.y, Math.max(r, 6), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
   }
 
   // ---------- sky gradient backdrop ----------
