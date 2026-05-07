@@ -22,6 +22,7 @@
 import { CFG, PLANT_LIST } from './config.js';
 import { BIOME } from './world.js';
 import { clamp, lerp, smoothstep, hsl, rand } from './utils.js';
+import { SpriteAtlas } from './sprites.js';
 
 // Biome palette — each biome is two colors (low/high) the renderer
 // blends between using a stable per-cell noise value. This gives an
@@ -136,6 +137,7 @@ export class Renderer {
     this.biomeImage = null;
     this.starField = null;
     this._lastSeason = null;
+    this.atlas = new SpriteAtlas();
     this.buildBiomeImage();
     this.buildStarField();
   }
@@ -399,348 +401,141 @@ export class Renderer {
     ctx.restore();
   }
 
-  // ---------- plants ----------
+  // ---------- plants (sprite-based) ----------
   _drawPlants(ctx, plants, cell) {
     const w = this.world;
     const x0 = Math.max(0, Math.floor(-this.panX / cell));
     const y0 = Math.max(0, Math.floor(-this.panY / cell));
     const x1 = Math.min(w.cols, Math.ceil((this.canvas.clientWidth - this.panX) / cell));
     const y1 = Math.min(w.rows, Math.ceil((this.canvas.clientHeight - this.panY) / cell));
+    const seasonName = w.seasonName();
 
-    // Light direction (from upper-left, modulated by sun phase)
-    const phase = w.dayPhase();
-    const sunDir = clamp((phase - 0.5) * 2, -1, 1); // -1 morning, +1 evening
-    const sx0 = -1 + sunDir;
-    const sy0 = -0.5;
+    ctx.imageSmoothingEnabled = false;
 
-    for (let y = y0; y < y1; y++) {
-      for (let x = x0; x < x1; x++) {
-        const i = w.idx(x, y);
-        const k = plants.kind[i];
-        if (!k) continue;
-        const e = plants.energy[i];
-        const def = CFG.plants[PLANT_LIST[k - 1]];
-        const t = clamp(e / def.maxEnergy, 0.1, 1);
-        const sx = x * cell + this.panX;
-        const sy = y * cell + this.panY;
-        const cx = sx + cell * 0.5;
-        const cy = sy + cell * 0.5;
-        const seasonName = w.seasonName();
+    // Two passes so taller plants (trees) sort above shorter ones in
+    // the same row band — gives a sense of depth.
+    for (let pass = 0; pass < 2; pass++) {
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const i = w.idx(x, y);
+          const k = plants.kind[i];
+          if (!k) continue;
+          const isTall = k === 3;
+          if (pass === 0 && isTall) continue;     // trees on pass 1
+          if (pass === 1 && !isTall) continue;
+          const e = plants.energy[i];
+          const def = CFG.plants[PLANT_LIST[k - 1]];
+          const t = clamp(e / def.maxEnergy, 0.1, 1);
+          const stage = t > 0.7 ? 2 : t > 0.35 ? 1 : 0;
 
-        if (k === 1) {
-          // grass tufts — multiple short blades
-          const baseR = def.color[0], baseG = def.color[1], baseB = def.color[2];
-          // autumn yellow / winter brown shift
-          let r = baseR, g = baseG, b = baseB;
-          if (seasonName === 'autumn') { r = 150; g = 130; b = 60; }
-          if (seasonName === 'winter') { r = 110; g = 100; b = 70; }
-          ctx.strokeStyle = `rgba(${r|0},${g|0},${b|0},${0.4 + 0.5 * t})`;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          const blades = 3;
-          for (let k2 = 0; k2 < blades; k2++) {
-            const bx = sx + cell * (0.2 + k2 * 0.3);
-            const by = sy + cell * 0.95;
-            ctx.moveTo(bx, by);
-            ctx.lineTo(bx + (k2 - 1) * 0.5, by - cell * 0.55 * t);
+          const name = PLANT_LIST[k - 1];
+          const sprite = this.atlas.getPlant(name, stage, seasonName);
+          // each "sprite pixel" maps to (cell / 8) world pixels for grass, etc.
+          // Render so the sprite sits on its cell:
+          //   grass: 8x8  → 1×1 cell
+          //   bush:  12x12 → roughly 1.5×1.5 cells (centered)
+          //   tree:  16x22 → ~2×2.7 cells (rooted at bottom of cell)
+          let scale = (cell * (k === 1 ? 1.0 : k === 2 ? 1.4 : 1.7)) / sprite.width;
+          // crisp scaling: snap to nearest 0.5 multiple at high zoom
+          if (scale > 1) scale = Math.round(scale * 2) / 2;
+          const dw = sprite.width * scale;
+          const dh = sprite.height * scale;
+          const sx = x * cell + this.panX + (cell - dw) / 2;
+          const sy = y * cell + this.panY + (cell - dh) +
+                     (k === 1 ? 0 : k === 2 ? cell * 0.1 : 0); // root tree/bush at cell base
+
+          // soft ground shadow under tall plants
+          if (k >= 2) {
+            ctx.fillStyle = 'rgba(0,0,0,0.30)';
+            ctx.beginPath();
+            ctx.ellipse(sx + dw / 2, y * cell + this.panY + cell * 0.95,
+                        dw * 0.30, cell * 0.18, 0, 0, Math.PI * 2);
+            ctx.fill();
           }
-          ctx.stroke();
-        } else if (k === 2) {
-          // bush — circle with shadow + highlight
-          const radius = cell * 0.42 * (0.6 + 0.4 * t);
-          // shadow
-          ctx.fillStyle = 'rgba(0,0,0,0.18)';
-          ctx.beginPath();
-          ctx.ellipse(cx + 1.5, cy + 1.5, radius, radius * 0.55, 0, 0, Math.PI * 2);
-          ctx.fill();
-          // body
-          let r = def.color[0], g = def.color[1], b = def.color[2];
-          if (seasonName === 'autumn') { r += 60; g -= 10; b -= 5; }
-          if (seasonName === 'winter') { r = 90; g = 85; b = 70; }
-          ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
-          ctx.beginPath();
-          ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-          ctx.fill();
-          // highlight (sun-side)
-          ctx.fillStyle = `rgba(255,255,200,${0.18 * t})`;
-          ctx.beginPath();
-          ctx.arc(cx + sx0 * radius * 0.4, cy + sy0 * radius * 0.4, radius * 0.55, 0, Math.PI * 2);
-          ctx.fill();
-        } else {
-          // tree — trunk + multi-layer canopy with shading
-          const sz = cell * 0.85 * (0.55 + 0.45 * t);
-          // shadow on ground
-          ctx.fillStyle = 'rgba(0,0,0,0.30)';
-          ctx.beginPath();
-          ctx.ellipse(cx + sz * 0.25, cy + cell * 0.45, sz * 0.55, sz * 0.20, 0, 0, Math.PI * 2);
-          ctx.fill();
-          // trunk
-          ctx.fillStyle = '#3a2818';
-          ctx.fillRect(cx - cell * 0.07, cy + cell * 0.05, cell * 0.14, cell * 0.45);
-          // canopy base
-          let r = def.color[0], g = def.color[1], b = def.color[2];
-          if (seasonName === 'autumn') { r = 200; g = 100; b = 30; }
-          if (seasonName === 'winter') { r = 110; g = 110; b = 100; }
-          ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
-          ctx.beginPath();
-          ctx.arc(cx, cy - sz * 0.15, sz * 0.55, 0, Math.PI * 2);
-          ctx.fill();
-          // canopy upper highlight
-          ctx.fillStyle = `rgba(255,255,200,${0.20 + 0.15 * t})`;
-          ctx.beginPath();
-          ctx.arc(cx + sx0 * sz * 0.3, cy - sz * 0.15 + sy0 * sz * 0.3, sz * 0.32, 0, Math.PI * 2);
-          ctx.fill();
-          // canopy darker shadow side
-          ctx.fillStyle = `rgba(0,0,0,0.18)`;
-          ctx.beginPath();
-          ctx.arc(cx - sx0 * sz * 0.3, cy - sz * 0.15 - sy0 * sz * 0.3, sz * 0.30, 0, Math.PI * 2);
-          ctx.fill();
+
+          ctx.drawImage(sprite, sx, sy, dw, dh);
         }
       }
     }
   }
 
-  // ---------- animals ----------
+  // ---------- animals (sprite-based) ----------
   _drawAnimals(ctx, agents, cell) {
+    ctx.imageSmoothingEnabled = false;
     for (let i = 0; i < agents.length; i++) {
       const a = agents[i];
       if (!a.alive) continue;
       const sx = a.x * cell + this.panX;
       const sy = a.y * cell + this.panY;
-      if (sx < -20 || sy < -20 || sx > this.canvas.clientWidth + 20 || sy > this.canvas.clientHeight + 20) continue;
+      if (sx < -40 || sy < -40 || sx > this.canvas.clientWidth + 40 || sy > this.canvas.clientHeight + 40) continue;
 
-      const angle = Math.atan2(a.vy, a.vx);
-      const sz = (a.spec.kind === 'predator' ? 4.2 : 3.2) * a.size * this.zoom;
+      const isLargeDeer = a.species === 'deer' && a.size > 1.4;
+      const sprite = this.atlas.getAnimal(a.species, Math.floor(a.walkDist * 0.7), isLargeDeer);
 
-      // Soft drop shadow
+      // Choose pixel scale per-species so sprites read at game scale.
+      // Aim for sprite to be roughly (size * 4 cells) wide on screen.
+      const desiredW = a.size * 4 * cell;
+      let scale = desiredW / sprite.width;
+      // Snap to integer (or half-integer) scales for crispness
+      if (scale >= 2) scale = Math.round(scale);
+      else if (scale >= 1) scale = Math.round(scale * 2) / 2;
+      else scale = 0.5; // never shrink below half-scale
+      const dw = sprite.width * scale;
+      const dh = sprite.height * scale;
+
+      // Soft drop shadow under sprite
       ctx.fillStyle = 'rgba(0,0,0,0.35)';
       ctx.beginPath();
-      ctx.ellipse(sx + 1, sy + sz * 0.85, sz * 0.95, sz * 0.30, 0, 0, Math.PI * 2);
+      ctx.ellipse(sx, sy + dh * 0.45, dw * 0.42, dh * 0.10, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      const eAlpha = clamp(a.energy / 1.4, 0.45, 1);
-      const baseHue = a.hue;
+      // Energy → alpha (low-energy animals look faded)
+      const eAlpha = clamp(a.energy / 1.4, 0.55, 1);
+      ctx.globalAlpha = eAlpha;
 
-      // Per-species color profile (driven by gene hue → small variation)
-      const profile = this._speciesColor(a.species, baseHue, eAlpha);
-
+      // Mirror by facing direction
       ctx.save();
       ctx.translate(sx, sy);
-      ctx.rotate(angle);
-
-      switch (a.species) {
-        case 'rabbit': this._drawRabbit(ctx, sz, profile); break;
-        case 'deer':   this._drawDeer(ctx, sz, profile);   break;
-        case 'fox':    this._drawFox(ctx, sz, profile);    break;
-        case 'wolf':   this._drawWolf(ctx, sz, profile);   break;
-      }
+      if (a.facing < 0) ctx.scale(-1, 1);
+      ctx.drawImage(sprite, -dw / 2, -dh / 2, dw, dh);
       ctx.restore();
 
-      // pregnancy ring
+      ctx.globalAlpha = 1;
+
+      // Subtle hue tint for genetic drift visualization
+      if (a.hue !== undefined) {
+        const baseHue = CFG.species[a.species].genes.hue.mean;
+        const drift = a.hue - baseHue;
+        if (Math.abs(drift) > 6) {
+          ctx.save();
+          ctx.translate(sx, sy);
+          if (a.facing < 0) ctx.scale(-1, 1);
+          ctx.globalCompositeOperation = 'source-atop';
+          // draw the sprite again, then tint
+          ctx.fillStyle = `hsla(${a.hue},60%,50%,${0.10 + Math.min(0.20, Math.abs(drift) / 60)})`;
+          ctx.fillRect(-dw / 2, -dh / 2, dw, dh);
+          ctx.restore();
+        }
+      }
+
+      // Pregnancy glow ring
       if (a.pregnant > 0) {
-        ctx.strokeStyle = 'rgba(255,160,200,0.8)';
+        ctx.strokeStyle = 'rgba(255,160,200,0.85)';
         ctx.lineWidth = 1.4;
         ctx.beginPath();
-        ctx.arc(sx, sy, sz + 3, 0, Math.PI * 2);
+        ctx.arc(sx, sy, dw * 0.45, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Hunting indicator: predator with prey close
+      if (a.huntCooldown > 18) {
+        ctx.strokeStyle = 'rgba(255,60,60,0.6)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(sx, sy, dw * 0.50, 0, Math.PI * 2);
         ctx.stroke();
       }
     }
-  }
-
-  _speciesColor(species, hue, alpha) {
-    let sat, light;
-    if (species === 'rabbit') { sat = 18; light = 78; }
-    else if (species === 'deer') { sat = 38; light = 38; }
-    else if (species === 'fox') { sat = 82; light = 52; }
-    else { sat = 22; light = 38; }
-    return {
-      body:   hsl(hue, sat, light, alpha),
-      shade:  hsl(hue, sat, Math.max(15, light - 18), alpha),
-      light:  hsl(hue, sat, Math.min(95, light + 14), alpha),
-      eye:    `rgba(20,20,20,${alpha})`,
-      sclera: `rgba(255,255,255,${alpha})`,
-    };
-  }
-
-  _drawEye(ctx, x, y, r, profile) {
-    ctx.fillStyle = profile.sclera;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = profile.eye;
-    ctx.beginPath();
-    ctx.arc(x + r * 0.2, y, r * 0.6, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  _drawRabbit(ctx, sz, p) {
-    // body
-    ctx.fillStyle = p.body;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, sz, sz * 0.7, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // belly highlight
-    ctx.fillStyle = p.light;
-    ctx.beginPath();
-    ctx.ellipse(0, sz * 0.15, sz * 0.7, sz * 0.4, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // ears (back)
-    ctx.fillStyle = p.shade;
-    ctx.fillRect(-sz * 0.45, -sz * 1.15, sz * 0.22, sz * 0.85);
-    ctx.fillRect(-sz * 0.05, -sz * 1.15, sz * 0.22, sz * 0.85);
-    // ears (inner)
-    ctx.fillStyle = p.light;
-    ctx.fillRect(-sz * 0.40, -sz * 1.05, sz * 0.10, sz * 0.65);
-    ctx.fillRect(0,            -sz * 1.05, sz * 0.10, sz * 0.65);
-    // tail puff
-    ctx.fillStyle = p.light;
-    ctx.beginPath();
-    ctx.arc(-sz * 0.95, 0, sz * 0.25, 0, Math.PI * 2);
-    ctx.fill();
-    // eye
-    this._drawEye(ctx, sz * 0.3, -sz * 0.18, sz * 0.18, p);
-    // nose
-    ctx.fillStyle = 'rgba(80,40,60,0.9)';
-    ctx.beginPath();
-    ctx.arc(sz * 0.85, 0, sz * 0.10, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  _drawDeer(ctx, sz, p) {
-    // body
-    ctx.fillStyle = p.body;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, sz * 1.15, sz * 0.55, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // back highlight
-    ctx.fillStyle = p.light;
-    ctx.beginPath();
-    ctx.ellipse(0, -sz * 0.2, sz * 0.9, sz * 0.2, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // legs (4 short stubs)
-    ctx.fillStyle = p.shade;
-    ctx.fillRect(-sz * 0.6, sz * 0.3, sz * 0.18, sz * 0.45);
-    ctx.fillRect(-sz * 0.1, sz * 0.3, sz * 0.18, sz * 0.45);
-    ctx.fillRect( sz * 0.4, sz * 0.3, sz * 0.18, sz * 0.45);
-    ctx.fillRect( sz * 0.8, sz * 0.3, sz * 0.18, sz * 0.45);
-    // neck + head
-    ctx.fillStyle = p.body;
-    ctx.beginPath();
-    ctx.ellipse(sz * 0.95, -sz * 0.2, sz * 0.45, sz * 0.32, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // antlers (only on big/old deer)
-    if (sz > 5) {
-      ctx.strokeStyle = 'rgba(70,55,30,0.9)';
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      ctx.moveTo(sz * 1.1, -sz * 0.4);
-      ctx.lineTo(sz * 1.4, -sz * 0.9);
-      ctx.lineTo(sz * 1.55, -sz * 0.7);
-      ctx.moveTo(sz * 1.1, -sz * 0.4);
-      ctx.lineTo(sz * 1.3, -sz * 1.0);
-      ctx.stroke();
-    }
-    // eye
-    this._drawEye(ctx, sz * 1.15, -sz * 0.25, sz * 0.13, p);
-  }
-
-  _drawFox(ctx, sz, p) {
-    // body
-    ctx.fillStyle = p.body;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, sz * 1.05, sz * 0.55, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // belly
-    ctx.fillStyle = p.light;
-    ctx.beginPath();
-    ctx.ellipse(0, sz * 0.2, sz * 0.7, sz * 0.25, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // tail
-    ctx.fillStyle = p.body;
-    ctx.beginPath();
-    ctx.ellipse(-sz * 1.15, -sz * 0.05, sz * 0.6, sz * 0.28, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // tail tip white
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.arc(-sz * 1.65, -sz * 0.05, sz * 0.20, 0, Math.PI * 2);
-    ctx.fill();
-    // head
-    ctx.fillStyle = p.body;
-    ctx.beginPath();
-    ctx.ellipse(sz * 0.9, -sz * 0.18, sz * 0.42, sz * 0.34, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // ears
-    ctx.fillStyle = p.shade;
-    ctx.beginPath();
-    ctx.moveTo(sz * 0.65, -sz * 0.55);
-    ctx.lineTo(sz * 0.85, -sz * 0.85);
-    ctx.lineTo(sz * 0.95, -sz * 0.45);
-    ctx.closePath();
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(sz * 1.05, -sz * 0.50);
-    ctx.lineTo(sz * 1.20, -sz * 0.80);
-    ctx.lineTo(sz * 1.25, -sz * 0.40);
-    ctx.closePath();
-    ctx.fill();
-    // eye
-    this._drawEye(ctx, sz * 1.0, -sz * 0.22, sz * 0.13, p);
-    // snout
-    ctx.fillStyle = '#1a1010';
-    ctx.beginPath();
-    ctx.arc(sz * 1.30, -sz * 0.10, sz * 0.10, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  _drawWolf(ctx, sz, p) {
-    // body
-    ctx.fillStyle = p.body;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, sz * 1.25, sz * 0.55, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // back stripe
-    ctx.fillStyle = p.shade;
-    ctx.beginPath();
-    ctx.ellipse(0, -sz * 0.25, sz * 0.95, sz * 0.18, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // legs
-    ctx.fillStyle = p.shade;
-    ctx.fillRect(-sz * 0.7, sz * 0.30, sz * 0.20, sz * 0.50);
-    ctx.fillRect(-sz * 0.2, sz * 0.30, sz * 0.20, sz * 0.50);
-    ctx.fillRect( sz * 0.5, sz * 0.30, sz * 0.20, sz * 0.50);
-    ctx.fillRect( sz * 0.95, sz * 0.30, sz * 0.20, sz * 0.50);
-    // head
-    ctx.fillStyle = p.body;
-    ctx.beginPath();
-    ctx.ellipse(sz * 1.08, -sz * 0.18, sz * 0.46, sz * 0.34, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // ears
-    ctx.fillStyle = p.shade;
-    ctx.beginPath();
-    ctx.moveTo(sz * 0.85, -sz * 0.50);
-    ctx.lineTo(sz * 1.00, -sz * 0.85);
-    ctx.lineTo(sz * 1.10, -sz * 0.45);
-    ctx.closePath();
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(sz * 1.20, -sz * 0.50);
-    ctx.lineTo(sz * 1.32, -sz * 0.85);
-    ctx.lineTo(sz * 1.40, -sz * 0.45);
-    ctx.closePath();
-    ctx.fill();
-    // tail
-    ctx.fillStyle = p.body;
-    ctx.beginPath();
-    ctx.ellipse(-sz * 1.30, sz * 0.0, sz * 0.55, sz * 0.22, -0.3, 0, Math.PI * 2);
-    ctx.fill();
-    // eye
-    this._drawEye(ctx, sz * 1.18, -sz * 0.22, sz * 0.13, p);
-    // snout
-    ctx.fillStyle = '#0e0e0e';
-    ctx.beginPath();
-    ctx.arc(sz * 1.50, -sz * 0.10, sz * 0.10, 0, Math.PI * 2);
-    ctx.fill();
   }
 
   // ---------- particles ----------

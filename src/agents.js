@@ -44,6 +44,8 @@ export class Animal {
     this.huntCooldown = 0;  // brief cooldown after a hunt attempt
     this.pregnant = 0;      // remaining ticks of pregnancy
     this.pregnancyMate = null;
+    this.walkDist = Math.random() * 4; // accumulated motion for animation frames
+    this.facing = 1;        // +1 right, -1 left
   }
 
   get speed()        { return this.genes.speed; }
@@ -104,6 +106,11 @@ export class Animal {
     this.x += this.vx; this.y += this.vy;
     if (this.x < 0) this.x += world.cols; if (this.x >= world.cols) this.x -= world.cols;
     if (this.y < 0) this.y += world.rows; if (this.y >= world.rows) this.y -= world.rows;
+
+    // Accumulate motion for sprite animation; lock facing direction
+    const stepMag = Math.hypot(this.vx, this.vy);
+    this.walkDist += stepMag;
+    if (Math.abs(this.vx) > 0.05) this.facing = this.vx >= 0 ? 1 : -1;
 
     // ----- metabolism + thirst -----
     this.energy -= this.metabolism + Math.hypot(this.vx, this.vy) * this.spec.moveCost;
