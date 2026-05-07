@@ -42,52 +42,66 @@ export class World {
     this.generate();
   }
 
-  // ------- terrain generation (simple value-noise + flood fill) -------
+  // ------- terrain generation (multi-octave value noise) -------
+  // Multi-octave noise gives a wide spread of values; we then renormalize
+  // to [0,1] so biome thresholds split the map into actually-diverse regions
+  // (the previous single-octave + heavy-blur version collapsed everything
+  // toward 0.5, producing a 100%-PLAIN map).
   generate() {
     const { cols, rows } = this;
 
-    // 1. Lay down a coarse noise field.
-    const ncols = Math.ceil(cols / 6);
-    const nrows = Math.ceil(rows / 6);
-    const noise = new Float32Array(ncols * nrows);
-    for (let i = 0; i < noise.length; i++) noise[i] = Math.random();
-    // Smooth several passes
-    for (let pass = 0; pass < 3; pass++) {
-      const out = new Float32Array(noise.length);
-      for (let y = 0; y < nrows; y++) {
-        for (let x = 0; x < ncols; x++) {
-          let s = 0, c = 0;
-          for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
-              const xx = x + dx, yy = y + dy;
-              if (xx < 0 || yy < 0 || xx >= ncols || yy >= nrows) continue;
-              s += noise[yy * ncols + xx]; c++;
-            }
-          }
-          out[y * ncols + x] = s / c;
+    const buildOctave = (cellSize) => {
+      const ncols = Math.ceil(cols / cellSize) + 1;
+      const nrows = Math.ceil(rows / cellSize) + 1;
+      const grid = new Float32Array(ncols * nrows);
+      for (let i = 0; i < grid.length; i++) grid[i] = Math.random();
+      // Sample with bilinear interpolation
+      const out = new Float32Array(cols * rows);
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const fx = x / cellSize, fy = y / cellSize;
+          const ix = Math.floor(fx), iy = Math.floor(fy);
+          const tx = fx - ix, ty = fy - iy;
+          // smooth interp
+          const sx = tx * tx * (3 - 2 * tx);
+          const sy = ty * ty * (3 - 2 * ty);
+          const a = grid[iy * ncols + ix];
+          const b = grid[iy * ncols + ix + 1];
+          const c = grid[(iy + 1) * ncols + ix];
+          const d = grid[(iy + 1) * ncols + ix + 1];
+          out[y * cols + x] = (a * (1 - sx) + b * sx) * (1 - sy) + (c * (1 - sx) + d * sx) * sy;
         }
       }
-      noise.set(out);
+      return out;
+    };
+
+    // sum 3 octaves for fractal-noise look
+    const o1 = buildOctave(18);
+    const o2 = buildOctave(8);
+    const o3 = buildOctave(3);
+    const noiseFull = new Float32Array(cols * rows);
+    let nMin = Infinity, nMax = -Infinity;
+    for (let i = 0; i < noiseFull.length; i++) {
+      const v = o1[i] * 0.6 + o2[i] * 0.3 + o3[i] * 0.1;
+      noiseFull[i] = v;
+      if (v < nMin) nMin = v;
+      if (v > nMax) nMax = v;
+    }
+    // Renormalize to [0, 1]
+    const span = (nMax - nMin) || 1;
+    for (let i = 0; i < noiseFull.length; i++) {
+      noiseFull[i] = (noiseFull[i] - nMin) / span;
     }
 
-    // 2. Sample noise into the full grid + classify into biomes.
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
-        const fx = (x / cols) * (ncols - 1);
-        const fy = (y / rows) * (nrows - 1);
-        const ix = Math.floor(fx), iy = Math.floor(fy);
-        const tx = fx - ix, ty = fy - iy;
-        const a = noise[iy * ncols + ix];
-        const b = noise[iy * ncols + Math.min(ix + 1, ncols - 1)];
-        const c = noise[Math.min(iy + 1, nrows - 1) * ncols + ix];
-        const d = noise[Math.min(iy + 1, nrows - 1) * ncols + Math.min(ix + 1, ncols - 1)];
-        const v = (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+        const v = noiseFull[y * cols + x];
 
         let biome;
-        if (v < 0.32) biome = BIOME.WATER;
-        else if (v < 0.36) biome = BIOME.SAND;
-        else if (v < 0.62) biome = BIOME.PLAIN;
-        else if (v < 0.82) biome = BIOME.FOREST;
+        if (v < 0.18) biome = BIOME.WATER;
+        else if (v < 0.24) biome = BIOME.SAND;
+        else if (v < 0.58) biome = BIOME.PLAIN;
+        else if (v < 0.85) biome = BIOME.FOREST;
         else biome = BIOME.ROCK;
 
         this.biome[y * cols + x] = biome;

@@ -57,7 +57,7 @@ export const CFG = {
     rabbit: {
       diet: ['grass', 'bush'],
       kind: 'prey',
-      startCount: 50,
+      startCount: 80,
       genes: {
         speed:        { mean: 0.42, min: 0.20, max: 0.85, mutate: 0.04 },
         vision:       { mean: 7,    min: 3,    max: 14,   mutate: 0.06 },
@@ -78,7 +78,7 @@ export const CFG = {
     deer: {
       diet: ['bush', 'tree'],
       kind: 'prey',
-      startCount: 14,
+      startCount: 24,
       genes: {
         speed:        { mean: 0.55, min: 0.30, max: 0.90, mutate: 0.04 },
         vision:       { mean: 10,   min: 5,    max: 16,   mutate: 0.05 },
@@ -99,7 +99,7 @@ export const CFG = {
     fox: {
       diet: ['rabbit'],
       kind: 'predator',
-      startCount: 14,
+      startCount: 22,
       genes: {
         speed:        { mean: 0.58, min: 0.30, max: 1.00, mutate: 0.04 },
         vision:       { mean: 13,   min: 6,    max: 22,   mutate: 0.05 },
@@ -121,7 +121,7 @@ export const CFG = {
     wolf: {
       diet: ['deer', 'rabbit'],
       kind: 'predator',
-      startCount: 5,
+      startCount: 10,
       genes: {
         speed:        { mean: 0.65, min: 0.30, max: 1.10, mutate: 0.04 },
         vision:       { mean: 16,   min: 8,    max: 26,   mutate: 0.05 },

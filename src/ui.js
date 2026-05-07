@@ -33,6 +33,8 @@ export class UI {
       document.getElementById('btnSpeed').textContent = `${sim.speed}×`;
     };
     document.getElementById('btnReset').onclick = () => sim.reset();
+    // Initialize button labels from current sim state
+    document.getElementById('btnSpeed').textContent = `${sim.speed}×`;
 
     // seed buttons
     for (const btn of document.querySelectorAll('[data-seed]')) {
