@@ -1,38 +1,61 @@
 // =============================================================
-// RENDER — draws the world. Designed for clarity over realism:
-//   • biomes get distinct base colors
-//   • plants are layered (grass, bushes, trees)
-//   • animals are drawn as simple species-specific bodies
-//   • day/night is a global tint
-//   • particle fx for kills, eating, mating
-//   • follow-cam draws a halo around the selected agent
+// RENDER — visual layer.
+//
+// Pass order each frame (back → front):
+//   1. sky gradient (color depends on time of day)
+//   2. biome base image (cached, baked once at world build)
+//   3. animated water ripples (trig offset over biome layer)
+//   4. plants (grass tufts, bushes with shading, trees w/ canopy)
+//   5. corpse/under-animal particles
+//   6. animals (with eyes, shadows, hue-driven coloring)
+//   7. over-animal particles (blood, love hearts, dust)
+//   8. weather (rain streaks)
+//   9. seasonal overlay (snow falling, autumn leaves)
+//  10. day/night tint (smooth gradient, not flat)
+//  11. stars (at night)
+//  12. sun / moon
+//  13. vignette
+//  14. selected-agent halo
+//  15. HUD text
 // =============================================================
 
 import { CFG, PLANT_LIST } from './config.js';
 import { BIOME } from './world.js';
-import { clamp, lerp, smoothstep, hsl } from './utils.js';
+import { clamp, lerp, smoothstep, hsl, rand } from './utils.js';
 
-const BIOME_COLOR = {
-  [BIOME.WATER]:  [38, 78, 130],
-  [BIOME.SAND]:   [196, 176, 120],
-  [BIOME.PLAIN]:  [70, 100, 55],
-  [BIOME.FOREST]: [40, 70, 35],
-  [BIOME.ROCK]:   [110, 105, 100],
+// Biome palette — each biome is two colors (low/high) the renderer
+// blends between using a stable per-cell noise value. This gives an
+// organic, painterly look instead of minecraft-flat fills.
+const BIOME_PALETTE = {
+  [BIOME.WATER]:  [[26, 58, 100], [42, 92, 146]],
+  [BIOME.SAND]:   [[208, 188, 132], [184, 162, 102]],
+  [BIOME.PLAIN]:  [[78, 116, 60],  [60, 96, 44]],
+  [BIOME.FOREST]: [[44, 78, 38],   [28, 58, 26]],
+  [BIOME.ROCK]:   [[120, 116, 110], [88, 84, 80]],
 };
+
+// Cheap deterministic 2D hash → [0, 1)
+function hash2(x, y) {
+  let h = (x * 73856093) ^ (y * 19349663);
+  h = (h ^ (h >>> 13)) * 1274126177;
+  h = (h ^ (h >>> 16)) >>> 0;
+  return (h & 0xffffff) / 0xffffff;
+}
 
 export class FX {
   constructor() { this.particles = []; }
+
   spawnDeath(x, y, species, size) {
     const n = species === 'wolf' || species === 'deer' ? 18 : 10;
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
       this.particles.push({
+        kind: 'blood',
         x, y,
         vx: Math.cos(a) * (0.4 + Math.random() * 0.8),
         vy: Math.sin(a) * (0.4 + Math.random() * 0.8),
         life: 30 + Math.random() * 30,
         max: 60,
-        color: 'rgba(180,40,40,1)',
         size: 1 + Math.random() * 2 * size,
       });
     }
@@ -41,29 +64,60 @@ export class FX {
     for (let i = 0; i < 3; i++) {
       const a = Math.random() * Math.PI * 2;
       this.particles.push({
+        kind: 'graze',
         x, y,
         vx: Math.cos(a) * 0.3, vy: Math.sin(a) * 0.3,
-        life: 16, max: 16,
-        color: 'rgba(140,200,90,1)', size: 1,
+        life: 16, max: 16, size: 1,
       });
     }
   }
   spawnLove(x, y) {
     for (let i = 0; i < 6; i++) {
       this.particles.push({
+        kind: 'heart',
         x, y,
         vx: (Math.random() - 0.5) * 0.3,
         vy: -0.4 - Math.random() * 0.3,
-        life: 50, max: 50,
-        color: 'rgba(255,120,180,1)', size: 1.4,
+        life: 50, max: 50, size: 1.4,
       });
     }
   }
+  spawnLeaf(x, y) {
+    this.particles.push({
+      kind: 'leaf',
+      x, y,
+      vx: -0.2 - Math.random() * 0.3,
+      vy: 0.15 + Math.random() * 0.25,
+      life: 240, max: 240,
+      size: 1.4 + Math.random() * 0.8,
+      hue: 18 + Math.random() * 30,
+      spin: Math.random() * Math.PI * 2,
+      spinV: (Math.random() - 0.5) * 0.05,
+    });
+  }
+  spawnSnow(x, y) {
+    this.particles.push({
+      kind: 'snow',
+      x, y,
+      vx: (Math.random() - 0.5) * 0.15,
+      vy: 0.12 + Math.random() * 0.18,
+      life: 360, max: 360,
+      size: 0.8 + Math.random() * 0.7,
+    });
+  }
+
   step() {
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const p = this.particles[i];
       p.x += p.vx; p.y += p.vy;
-      p.vx *= 0.96; p.vy *= 0.96;
+      if (p.kind === 'blood' || p.kind === 'graze') {
+        p.vx *= 0.96; p.vy *= 0.96;
+      } else if (p.kind === 'leaf') {
+        p.vx += Math.sin(p.life * 0.05) * 0.01;
+        if (p.spinV) p.spin += p.spinV;
+      } else if (p.kind === 'heart') {
+        p.vy *= 0.98;
+      }
       p.life--;
       if (p.life <= 0) this.particles.splice(i, 1);
     }
@@ -75,37 +129,78 @@ export class Renderer {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.world = world;
-    // camera
     this.zoom = 1;
     this.panX = 0;
     this.panY = 0;
     this.followId = null;
-    // cached biome image for speed
     this.biomeImage = null;
+    this.starField = null;
+    this._lastSeason = null;
     this.buildBiomeImage();
+    this.buildStarField();
   }
 
   setWorld(world) {
     this.world = world;
     this.buildBiomeImage();
+    this.buildStarField();
   }
 
+  // ---------- baked biome image ----------
   buildBiomeImage() {
     const w = this.world;
     const off = document.createElement('canvas');
-    off.width = w.cols; off.height = w.rows;
+    // Render biome at higher resolution so the per-cell noise looks
+    // smoother once scaled up by the cell size.
+    const SCALE = 2;
+    off.width = w.cols * SCALE;
+    off.height = w.rows * SCALE;
     const octx = off.getContext('2d');
-    const img = octx.createImageData(w.cols, w.rows);
-    for (let y = 0; y < w.rows; y++) {
-      for (let x = 0; x < w.cols; x++) {
-        const i = y * w.cols + x;
+    const img = octx.createImageData(off.width, off.height);
+
+    for (let py = 0; py < off.height; py++) {
+      for (let px = 0; px < off.width; px++) {
+        const cx = (px / SCALE) | 0;
+        const cy = (py / SCALE) | 0;
+        const i = cy * w.cols + cx;
         const b = w.biome[i];
-        const c = BIOME_COLOR[b];
-        const j = i * 4;
-        const noise = ((x * 92821 + y * 689287) % 17) - 8;
-        img.data[j  ] = clamp(c[0] + noise, 0, 255);
-        img.data[j+1] = clamp(c[1] + noise, 0, 255);
-        img.data[j+2] = clamp(c[2] + noise, 0, 255);
+        const pal = BIOME_PALETTE[b];
+
+        // Two-octave noise: cell-scale + sub-cell-scale for organic feel.
+        const n1 = hash2(cx, cy);
+        const n2 = hash2(px, py);
+        const n  = n1 * 0.7 + n2 * 0.3;
+
+        let r = lerp(pal[0][0], pal[1][0], n);
+        let g = lerp(pal[0][1], pal[1][1], n);
+        let bl= lerp(pal[0][2], pal[1][2], n);
+
+        // Soften biome edges by blending toward neighbor's palette.
+        if (px % SCALE === 0 || py % SCALE === 0) {
+          const nbr = (cx > 0)         && w.biome[i - 1];
+          const nbu = (cy > 0)         && w.biome[i - w.cols];
+          const blend = (otherBiome) => {
+            if (otherBiome === b || otherBiome === false) return;
+            const op = BIOME_PALETTE[otherBiome];
+            const m = 0.25;
+            r  = r  * (1 - m) + lerp(op[0][0], op[1][0], n) * m;
+            g  = g  * (1 - m) + lerp(op[0][1], op[1][1], n) * m;
+            bl = bl * (1 - m) + lerp(op[0][2], op[1][2], n) * m;
+          };
+          blend(nbr); blend(nbu);
+        }
+
+        // Soil-darken: richer soil → slightly darker, more saturated land.
+        if (b !== BIOME.WATER) {
+          const soil = w.soil[i];
+          const dark = soil * 18;
+          r -= dark; g -= dark * 0.5; bl -= dark;
+        }
+
+        const j = (py * off.width + px) * 4;
+        img.data[j  ] = clamp(r | 0, 0, 255);
+        img.data[j+1] = clamp(g | 0, 0, 255);
+        img.data[j+2] = clamp(bl | 0, 0, 255);
         img.data[j+3] = 255;
       }
     }
@@ -113,7 +208,21 @@ export class Renderer {
     this.biomeImage = off;
   }
 
-  // World coords → screen coords
+  // Pre-compute a star field for night rendering.
+  buildStarField() {
+    const stars = [];
+    const W = window.innerWidth, H = window.innerHeight;
+    for (let i = 0; i < 140; i++) {
+      stars.push({
+        x: Math.random() * W,
+        y: Math.random() * H * 0.7,
+        size: Math.random() < 0.85 ? 0.6 : 1.4,
+        twinkle: Math.random() * Math.PI * 2,
+      });
+    }
+    this.starField = stars;
+  }
+
   toScreen(wx, wy) {
     const cell = this.world.cell * this.zoom;
     return [wx * cell + this.panX, wy * cell + this.panY];
@@ -131,9 +240,12 @@ export class Renderer {
     this.canvas.style.width = r.width + 'px';
     this.canvas.style.height = r.height + 'px';
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.buildStarField();
   }
 
-  // -------- main draw --------
+  // ============================================================
+  //                          MAIN DRAW
+  // ============================================================
   draw(plants, agents, fx) {
     const ctx = this.ctx;
     const W = this.canvas.clientWidth;
@@ -141,80 +253,165 @@ export class Renderer {
     const w = this.world;
     const cell = w.cell * this.zoom;
 
-    // follow camera: keep selected agent centered
+    // Follow-cam
     if (this.followId !== null) {
       const target = agents.find(a => a.id === this.followId && a.alive);
       if (target) {
         this.panX = W * 0.5 - target.x * cell;
         this.panY = H * 0.5 - target.y * cell;
-      } else {
-        this.followId = null;
-      }
+      } else this.followId = null;
     }
 
-    // background
-    ctx.fillStyle = '#05080b';
-    ctx.fillRect(0, 0, W, H);
+    // 1. Sky background (visible where world doesn't reach)
+    this._drawSky(ctx, W, H);
 
-    // biomes (scaled)
-    ctx.imageSmoothingEnabled = false;
+    // 2. Biome base
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(this.biomeImage,
       this.panX, this.panY, w.cols * cell, w.rows * cell);
 
-    // moisture overlay (subtle blue tint where wet, brown where dry)
-    if (this.zoom >= 0.6) this._drawMoistureSubtle(ctx, cell);
+    // 3. Animated water ripples
+    this._drawWaterRipples(ctx, cell);
 
-    // plants
+    // 4. Plants
     this._drawPlants(ctx, plants, cell);
 
-    // particles (under animals)
-    this._drawParticles(ctx, fx, cell, false);
+    // 5. Under-animal particles
+    this._drawParticles(ctx, fx, cell, 'under');
 
-    // animals
+    // 6. Animals
     this._drawAnimals(ctx, agents, cell);
 
-    // particles (over animals — death blood)
-    this._drawParticles(ctx, fx, cell, true);
+    // 7. Over-animal particles
+    this._drawParticles(ctx, fx, cell, 'over');
 
-    // day/night tint
-    this._drawDayNight(ctx, W, H);
-
-    // weather
+    // 8. Weather
     this._drawWeather(ctx, W, H);
 
-    // selected agent halo
+    // 9. Seasonal particles (drifting snow / leaves)
+    this._spawnSeasonal(fx);
+    this._drawParticles(ctx, fx, cell, 'seasonal');
+
+    // 10. Day/night tint (smooth gradient)
+    this._drawDayNight(ctx, W, H);
+
+    // 11. Stars
+    this._drawStars(ctx, W, H);
+
+    // 12. Sun / moon
+    this._drawCelestial(ctx, W, H);
+
+    // 13. Vignette
+    this._drawVignette(ctx, W, H);
+
+    // 14. Selected halo
     if (this.followId !== null) {
       const target = agents.find(a => a.id === this.followId && a.alive);
       if (target) {
         const [sx, sy] = this.toScreen(target.x, target.y);
-        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
         ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
         ctx.beginPath();
-        ctx.arc(sx, sy, 14, 0, Math.PI * 2);
+        ctx.arc(sx, sy, 16, 0, Math.PI * 2);
         ctx.stroke();
+        ctx.setLineDash([]);
       }
     }
 
-    // HUD: time/season/weather
+    // 15. HUD
     this._drawHud(ctx, W, H);
   }
 
-  _drawMoistureSubtle(ctx, cell) {
+  // ---------- sky gradient backdrop ----------
+  _drawSky(ctx, W, H) {
     const w = this.world;
-    if (w.weather !== 'drought' && w.weather !== 'rain') return;
-    ctx.globalAlpha = w.weather === 'rain' ? 0.10 : 0.18;
-    ctx.fillStyle = w.weather === 'rain' ? '#5b9bd5' : '#a87a3e';
-    ctx.fillRect(this.panX, this.panY, w.cols * cell, w.rows * cell);
-    ctx.globalAlpha = 1;
+    const phase = w.dayPhase();
+    // pick three keyframes by phase
+    let topColor, botColor;
+    if (phase < 0.20) {              // late night
+      topColor = [10, 14, 30]; botColor = [20, 26, 48];
+    } else if (phase < 0.30) {       // dawn
+      const t = (phase - 0.20) / 0.10;
+      topColor = lerp3([10,14,30], [80,60,90], t);
+      botColor = lerp3([20,26,48], [240,150,90], t);
+    } else if (phase < 0.45) {       // morning
+      const t = (phase - 0.30) / 0.15;
+      topColor = lerp3([80,60,90], [120,170,220], t);
+      botColor = lerp3([240,150,90], [200,220,230], t);
+    } else if (phase < 0.55) {       // noon
+      topColor = [120, 170, 220]; botColor = [200, 220, 230];
+    } else if (phase < 0.70) {       // afternoon
+      const t = (phase - 0.55) / 0.15;
+      topColor = lerp3([120,170,220], [180,110,80], t);
+      botColor = lerp3([200,220,230], [255,180,110], t);
+    } else if (phase < 0.80) {       // dusk
+      const t = (phase - 0.70) / 0.10;
+      topColor = lerp3([180,110,80], [40,30,60], t);
+      botColor = lerp3([255,180,110], [80,40,80], t);
+    } else {                          // night
+      const t = (phase - 0.80) / 0.20;
+      topColor = lerp3([40,30,60], [10,14,30], t);
+      botColor = lerp3([80,40,80], [20,26,48], t);
+    }
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, `rgb(${topColor.map(v=>v|0).join(',')})`);
+    grad.addColorStop(1, `rgb(${botColor.map(v=>v|0).join(',')})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
   }
 
-  _drawPlants(ctx, plants, cell) {
+  // ---------- animated water ripples ----------
+  _drawWaterRipples(ctx, cell) {
     const w = this.world;
-    // visible bounds in cell-space
+    if (cell < 4) return; // skip on extreme zoom-out
     const x0 = Math.max(0, Math.floor(-this.panX / cell));
     const y0 = Math.max(0, Math.floor(-this.panY / cell));
     const x1 = Math.min(w.cols, Math.ceil((this.canvas.clientWidth - this.panX) / cell));
     const y1 = Math.min(w.rows, Math.ceil((this.canvas.clientHeight - this.panY) / cell));
+    const t = w.tick * 0.05;
+
+    ctx.save();
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const i = w.idx(x, y);
+        if (w.biome[i] !== BIOME.WATER) continue;
+        const sx = x * cell + this.panX;
+        const sy = y * cell + this.panY;
+        // Sinusoidal brightness variation
+        const ripple = Math.sin(x * 0.7 + y * 0.5 + t) * 0.5 + 0.5;
+        const alpha = 0.08 + 0.10 * ripple;
+        ctx.fillStyle = `rgba(180,220,240,${alpha})`;
+        ctx.fillRect(sx, sy, cell, cell);
+
+        // Tiny highlight streak
+        if ((x + y + (t|0)) % 17 === 0) {
+          ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(sx + cell * 0.2, sy + cell * 0.5);
+          ctx.lineTo(sx + cell * 0.7, sy + cell * 0.5);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  // ---------- plants ----------
+  _drawPlants(ctx, plants, cell) {
+    const w = this.world;
+    const x0 = Math.max(0, Math.floor(-this.panX / cell));
+    const y0 = Math.max(0, Math.floor(-this.panY / cell));
+    const x1 = Math.min(w.cols, Math.ceil((this.canvas.clientWidth - this.panX) / cell));
+    const y1 = Math.min(w.rows, Math.ceil((this.canvas.clientHeight - this.panY) / cell));
+
+    // Light direction (from upper-left, modulated by sun phase)
+    const phase = w.dayPhase();
+    const sunDir = clamp((phase - 0.5) * 2, -1, 1); // -1 morning, +1 evening
+    const sx0 = -1 + sunDir;
+    const sy0 = -0.5;
 
     for (let y = y0; y < y1; y++) {
       for (let x = x0; x < x1; x++) {
@@ -226,180 +423,507 @@ export class Renderer {
         const t = clamp(e / def.maxEnergy, 0.1, 1);
         const sx = x * cell + this.panX;
         const sy = y * cell + this.panY;
+        const cx = sx + cell * 0.5;
+        const cy = sy + cell * 0.5;
+        const seasonName = w.seasonName();
+
         if (k === 1) {
-          // grass — small filled rect
-          ctx.fillStyle = `rgba(${def.color[0]},${def.color[1]},${def.color[2]},${0.3 + 0.6 * t})`;
-          ctx.fillRect(sx, sy + cell * 0.3, cell, cell * 0.7);
-        } else if (k === 2) {
-          // bush — circle
-          ctx.fillStyle = `rgba(${def.color[0]},${def.color[1]},${def.color[2]},${0.5 + 0.5 * t})`;
+          // grass tufts — multiple short blades
+          const baseR = def.color[0], baseG = def.color[1], baseB = def.color[2];
+          // autumn yellow / winter brown shift
+          let r = baseR, g = baseG, b = baseB;
+          if (seasonName === 'autumn') { r = 150; g = 130; b = 60; }
+          if (seasonName === 'winter') { r = 110; g = 100; b = 70; }
+          ctx.strokeStyle = `rgba(${r|0},${g|0},${b|0},${0.4 + 0.5 * t})`;
+          ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.arc(sx + cell * 0.5, sy + cell * 0.5, cell * 0.45 * (0.6 + 0.4 * t), 0, Math.PI * 2);
+          const blades = 3;
+          for (let k2 = 0; k2 < blades; k2++) {
+            const bx = sx + cell * (0.2 + k2 * 0.3);
+            const by = sy + cell * 0.95;
+            ctx.moveTo(bx, by);
+            ctx.lineTo(bx + (k2 - 1) * 0.5, by - cell * 0.55 * t);
+          }
+          ctx.stroke();
+        } else if (k === 2) {
+          // bush — circle with shadow + highlight
+          const radius = cell * 0.42 * (0.6 + 0.4 * t);
+          // shadow
+          ctx.fillStyle = 'rgba(0,0,0,0.18)';
+          ctx.beginPath();
+          ctx.ellipse(cx + 1.5, cy + 1.5, radius, radius * 0.55, 0, 0, Math.PI * 2);
+          ctx.fill();
+          // body
+          let r = def.color[0], g = def.color[1], b = def.color[2];
+          if (seasonName === 'autumn') { r += 60; g -= 10; b -= 5; }
+          if (seasonName === 'winter') { r = 90; g = 85; b = 70; }
+          ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+          ctx.beginPath();
+          ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+          ctx.fill();
+          // highlight (sun-side)
+          ctx.fillStyle = `rgba(255,255,200,${0.18 * t})`;
+          ctx.beginPath();
+          ctx.arc(cx + sx0 * radius * 0.4, cy + sy0 * radius * 0.4, radius * 0.55, 0, Math.PI * 2);
           ctx.fill();
         } else {
-          // tree — small trunk + canopy
-          const cs = cell * 0.65 * (0.5 + 0.5 * t);
-          ctx.fillStyle = `rgba(70,45,25,0.9)`;
-          ctx.fillRect(sx + cell * 0.42, sy + cell * 0.55, cell * 0.16, cell * 0.45);
-          ctx.fillStyle = `rgba(${def.color[0]},${def.color[1]},${def.color[2]},${0.7 + 0.3 * t})`;
+          // tree — trunk + multi-layer canopy with shading
+          const sz = cell * 0.85 * (0.55 + 0.45 * t);
+          // shadow on ground
+          ctx.fillStyle = 'rgba(0,0,0,0.30)';
           ctx.beginPath();
-          ctx.arc(sx + cell * 0.5, sy + cell * 0.45, cs * 0.55, 0, Math.PI * 2);
+          ctx.ellipse(cx + sz * 0.25, cy + cell * 0.45, sz * 0.55, sz * 0.20, 0, 0, Math.PI * 2);
+          ctx.fill();
+          // trunk
+          ctx.fillStyle = '#3a2818';
+          ctx.fillRect(cx - cell * 0.07, cy + cell * 0.05, cell * 0.14, cell * 0.45);
+          // canopy base
+          let r = def.color[0], g = def.color[1], b = def.color[2];
+          if (seasonName === 'autumn') { r = 200; g = 100; b = 30; }
+          if (seasonName === 'winter') { r = 110; g = 110; b = 100; }
+          ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+          ctx.beginPath();
+          ctx.arc(cx, cy - sz * 0.15, sz * 0.55, 0, Math.PI * 2);
+          ctx.fill();
+          // canopy upper highlight
+          ctx.fillStyle = `rgba(255,255,200,${0.20 + 0.15 * t})`;
+          ctx.beginPath();
+          ctx.arc(cx + sx0 * sz * 0.3, cy - sz * 0.15 + sy0 * sz * 0.3, sz * 0.32, 0, Math.PI * 2);
+          ctx.fill();
+          // canopy darker shadow side
+          ctx.fillStyle = `rgba(0,0,0,0.18)`;
+          ctx.beginPath();
+          ctx.arc(cx - sx0 * sz * 0.3, cy - sz * 0.15 - sy0 * sz * 0.3, sz * 0.30, 0, Math.PI * 2);
           ctx.fill();
         }
       }
     }
   }
 
+  // ---------- animals ----------
   _drawAnimals(ctx, agents, cell) {
     for (let i = 0; i < agents.length; i++) {
       const a = agents[i];
       if (!a.alive) continue;
       const sx = a.x * cell + this.panX;
       const sy = a.y * cell + this.panY;
-      // skip offscreen
       if (sx < -20 || sy < -20 || sx > this.canvas.clientWidth + 20 || sy > this.canvas.clientHeight + 20) continue;
 
       const angle = Math.atan2(a.vy, a.vx);
-      const sz = (a.spec.kind === 'predator' ? 4 : 3) * a.size * this.zoom;
+      const sz = (a.spec.kind === 'predator' ? 4.2 : 3.2) * a.size * this.zoom;
 
-      // shadow
-      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      // Soft drop shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
       ctx.beginPath();
-      ctx.ellipse(sx, sy + sz * 0.7, sz * 0.9, sz * 0.35, 0, 0, Math.PI * 2);
+      ctx.ellipse(sx + 1, sy + sz * 0.85, sz * 0.95, sz * 0.30, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      // body, hue from genes
-      const eAlpha = clamp(a.energy / 1.4, 0.3, 1);
+      const eAlpha = clamp(a.energy / 1.4, 0.45, 1);
       const baseHue = a.hue;
-      const sat = a.species === 'rabbit' ? 12 :
-                  a.species === 'deer'   ? 30 :
-                  a.species === 'fox'    ? 80 :
-                  60;
-      const light = a.species === 'rabbit' ? 78 :
-                    a.species === 'deer'   ? 38 :
-                    a.species === 'fox'    ? 52 :
-                    32;
+
+      // Per-species color profile (driven by gene hue → small variation)
+      const profile = this._speciesColor(a.species, baseHue, eAlpha);
 
       ctx.save();
       ctx.translate(sx, sy);
       ctx.rotate(angle);
 
       switch (a.species) {
-        case 'rabbit':
-          ctx.fillStyle = hsl(baseHue, sat, light, eAlpha);
-          ctx.beginPath();
-          ctx.ellipse(0, 0, sz, sz * 0.7, 0, 0, Math.PI * 2);
-          ctx.fill();
-          // ears
-          ctx.fillStyle = hsl(baseHue, sat, light - 8, eAlpha);
-          ctx.fillRect(-sz * 0.4, -sz * 1.1, sz * 0.2, sz * 0.7);
-          ctx.fillRect(-sz * 0.05, -sz * 1.1, sz * 0.2, sz * 0.7);
-          break;
-        case 'deer':
-          ctx.fillStyle = hsl(baseHue, sat, light, eAlpha);
-          ctx.beginPath();
-          ctx.ellipse(0, 0, sz * 1.1, sz * 0.55, 0, 0, Math.PI * 2);
-          ctx.fill();
-          // head
-          ctx.beginPath();
-          ctx.ellipse(sz * 0.9, -sz * 0.2, sz * 0.45, sz * 0.35, 0, 0, Math.PI * 2);
-          ctx.fill();
-          break;
-        case 'fox':
-          ctx.fillStyle = hsl(baseHue, sat, light, eAlpha);
-          ctx.beginPath();
-          ctx.ellipse(0, 0, sz * 1.05, sz * 0.55, 0, 0, Math.PI * 2);
-          ctx.fill();
-          // tail
-          ctx.beginPath();
-          ctx.ellipse(-sz * 1.1, 0, sz * 0.55, sz * 0.25, 0, 0, Math.PI * 2);
-          ctx.fill();
-          // tail tip
-          ctx.fillStyle = '#fff';
-          ctx.beginPath();
-          ctx.arc(-sz * 1.55, 0, sz * 0.18, 0, Math.PI * 2);
-          ctx.fill();
-          break;
-        case 'wolf':
-          ctx.fillStyle = hsl(baseHue, sat, light, eAlpha);
-          ctx.beginPath();
-          ctx.ellipse(0, 0, sz * 1.2, sz * 0.55, 0, 0, Math.PI * 2);
-          ctx.fill();
-          // head
-          ctx.beginPath();
-          ctx.ellipse(sz * 1.1, -sz * 0.15, sz * 0.45, sz * 0.32, 0, 0, Math.PI * 2);
-          ctx.fill();
-          // tail
-          ctx.beginPath();
-          ctx.ellipse(-sz * 1.2, 0, sz * 0.5, sz * 0.22, 0, 0, Math.PI * 2);
-          ctx.fill();
-          break;
+        case 'rabbit': this._drawRabbit(ctx, sz, profile); break;
+        case 'deer':   this._drawDeer(ctx, sz, profile);   break;
+        case 'fox':    this._drawFox(ctx, sz, profile);    break;
+        case 'wolf':   this._drawWolf(ctx, sz, profile);   break;
       }
       ctx.restore();
 
-      // pregnancy tint
+      // pregnancy ring
       if (a.pregnant > 0) {
-        ctx.strokeStyle = 'rgba(255,160,200,0.7)';
-        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = 'rgba(255,160,200,0.8)';
+        ctx.lineWidth = 1.4;
         ctx.beginPath();
-        ctx.arc(sx, sy, sz + 2, 0, Math.PI * 2);
+        ctx.arc(sx, sy, sz + 3, 0, Math.PI * 2);
         ctx.stroke();
       }
     }
   }
 
-  _drawParticles(ctx, fx, cell, blood) {
+  _speciesColor(species, hue, alpha) {
+    let sat, light;
+    if (species === 'rabbit') { sat = 18; light = 78; }
+    else if (species === 'deer') { sat = 38; light = 38; }
+    else if (species === 'fox') { sat = 82; light = 52; }
+    else { sat = 22; light = 38; }
+    return {
+      body:   hsl(hue, sat, light, alpha),
+      shade:  hsl(hue, sat, Math.max(15, light - 18), alpha),
+      light:  hsl(hue, sat, Math.min(95, light + 14), alpha),
+      eye:    `rgba(20,20,20,${alpha})`,
+      sclera: `rgba(255,255,255,${alpha})`,
+    };
+  }
+
+  _drawEye(ctx, x, y, r, profile) {
+    ctx.fillStyle = profile.sclera;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = profile.eye;
+    ctx.beginPath();
+    ctx.arc(x + r * 0.2, y, r * 0.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  _drawRabbit(ctx, sz, p) {
+    // body
+    ctx.fillStyle = p.body;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, sz, sz * 0.7, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // belly highlight
+    ctx.fillStyle = p.light;
+    ctx.beginPath();
+    ctx.ellipse(0, sz * 0.15, sz * 0.7, sz * 0.4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // ears (back)
+    ctx.fillStyle = p.shade;
+    ctx.fillRect(-sz * 0.45, -sz * 1.15, sz * 0.22, sz * 0.85);
+    ctx.fillRect(-sz * 0.05, -sz * 1.15, sz * 0.22, sz * 0.85);
+    // ears (inner)
+    ctx.fillStyle = p.light;
+    ctx.fillRect(-sz * 0.40, -sz * 1.05, sz * 0.10, sz * 0.65);
+    ctx.fillRect(0,            -sz * 1.05, sz * 0.10, sz * 0.65);
+    // tail puff
+    ctx.fillStyle = p.light;
+    ctx.beginPath();
+    ctx.arc(-sz * 0.95, 0, sz * 0.25, 0, Math.PI * 2);
+    ctx.fill();
+    // eye
+    this._drawEye(ctx, sz * 0.3, -sz * 0.18, sz * 0.18, p);
+    // nose
+    ctx.fillStyle = 'rgba(80,40,60,0.9)';
+    ctx.beginPath();
+    ctx.arc(sz * 0.85, 0, sz * 0.10, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  _drawDeer(ctx, sz, p) {
+    // body
+    ctx.fillStyle = p.body;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, sz * 1.15, sz * 0.55, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // back highlight
+    ctx.fillStyle = p.light;
+    ctx.beginPath();
+    ctx.ellipse(0, -sz * 0.2, sz * 0.9, sz * 0.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // legs (4 short stubs)
+    ctx.fillStyle = p.shade;
+    ctx.fillRect(-sz * 0.6, sz * 0.3, sz * 0.18, sz * 0.45);
+    ctx.fillRect(-sz * 0.1, sz * 0.3, sz * 0.18, sz * 0.45);
+    ctx.fillRect( sz * 0.4, sz * 0.3, sz * 0.18, sz * 0.45);
+    ctx.fillRect( sz * 0.8, sz * 0.3, sz * 0.18, sz * 0.45);
+    // neck + head
+    ctx.fillStyle = p.body;
+    ctx.beginPath();
+    ctx.ellipse(sz * 0.95, -sz * 0.2, sz * 0.45, sz * 0.32, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // antlers (only on big/old deer)
+    if (sz > 5) {
+      ctx.strokeStyle = 'rgba(70,55,30,0.9)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(sz * 1.1, -sz * 0.4);
+      ctx.lineTo(sz * 1.4, -sz * 0.9);
+      ctx.lineTo(sz * 1.55, -sz * 0.7);
+      ctx.moveTo(sz * 1.1, -sz * 0.4);
+      ctx.lineTo(sz * 1.3, -sz * 1.0);
+      ctx.stroke();
+    }
+    // eye
+    this._drawEye(ctx, sz * 1.15, -sz * 0.25, sz * 0.13, p);
+  }
+
+  _drawFox(ctx, sz, p) {
+    // body
+    ctx.fillStyle = p.body;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, sz * 1.05, sz * 0.55, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // belly
+    ctx.fillStyle = p.light;
+    ctx.beginPath();
+    ctx.ellipse(0, sz * 0.2, sz * 0.7, sz * 0.25, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // tail
+    ctx.fillStyle = p.body;
+    ctx.beginPath();
+    ctx.ellipse(-sz * 1.15, -sz * 0.05, sz * 0.6, sz * 0.28, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // tail tip white
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(-sz * 1.65, -sz * 0.05, sz * 0.20, 0, Math.PI * 2);
+    ctx.fill();
+    // head
+    ctx.fillStyle = p.body;
+    ctx.beginPath();
+    ctx.ellipse(sz * 0.9, -sz * 0.18, sz * 0.42, sz * 0.34, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // ears
+    ctx.fillStyle = p.shade;
+    ctx.beginPath();
+    ctx.moveTo(sz * 0.65, -sz * 0.55);
+    ctx.lineTo(sz * 0.85, -sz * 0.85);
+    ctx.lineTo(sz * 0.95, -sz * 0.45);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(sz * 1.05, -sz * 0.50);
+    ctx.lineTo(sz * 1.20, -sz * 0.80);
+    ctx.lineTo(sz * 1.25, -sz * 0.40);
+    ctx.closePath();
+    ctx.fill();
+    // eye
+    this._drawEye(ctx, sz * 1.0, -sz * 0.22, sz * 0.13, p);
+    // snout
+    ctx.fillStyle = '#1a1010';
+    ctx.beginPath();
+    ctx.arc(sz * 1.30, -sz * 0.10, sz * 0.10, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  _drawWolf(ctx, sz, p) {
+    // body
+    ctx.fillStyle = p.body;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, sz * 1.25, sz * 0.55, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // back stripe
+    ctx.fillStyle = p.shade;
+    ctx.beginPath();
+    ctx.ellipse(0, -sz * 0.25, sz * 0.95, sz * 0.18, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // legs
+    ctx.fillStyle = p.shade;
+    ctx.fillRect(-sz * 0.7, sz * 0.30, sz * 0.20, sz * 0.50);
+    ctx.fillRect(-sz * 0.2, sz * 0.30, sz * 0.20, sz * 0.50);
+    ctx.fillRect( sz * 0.5, sz * 0.30, sz * 0.20, sz * 0.50);
+    ctx.fillRect( sz * 0.95, sz * 0.30, sz * 0.20, sz * 0.50);
+    // head
+    ctx.fillStyle = p.body;
+    ctx.beginPath();
+    ctx.ellipse(sz * 1.08, -sz * 0.18, sz * 0.46, sz * 0.34, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // ears
+    ctx.fillStyle = p.shade;
+    ctx.beginPath();
+    ctx.moveTo(sz * 0.85, -sz * 0.50);
+    ctx.lineTo(sz * 1.00, -sz * 0.85);
+    ctx.lineTo(sz * 1.10, -sz * 0.45);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(sz * 1.20, -sz * 0.50);
+    ctx.lineTo(sz * 1.32, -sz * 0.85);
+    ctx.lineTo(sz * 1.40, -sz * 0.45);
+    ctx.closePath();
+    ctx.fill();
+    // tail
+    ctx.fillStyle = p.body;
+    ctx.beginPath();
+    ctx.ellipse(-sz * 1.30, sz * 0.0, sz * 0.55, sz * 0.22, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+    // eye
+    this._drawEye(ctx, sz * 1.18, -sz * 0.22, sz * 0.13, p);
+    // snout
+    ctx.fillStyle = '#0e0e0e';
+    ctx.beginPath();
+    ctx.arc(sz * 1.50, -sz * 0.10, sz * 0.10, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ---------- particles ----------
+  _drawParticles(ctx, fx, cell, layer) {
     for (let i = 0; i < fx.particles.length; i++) {
       const p = fx.particles[i];
-      const isBlood = p.color.includes('180,40,40');
-      if (blood !== isBlood) continue;
+      let inLayer;
+      if (layer === 'under')    inLayer = p.kind === 'graze';
+      else if (layer === 'over') inLayer = p.kind === 'blood' || p.kind === 'heart';
+      else                       inLayer = p.kind === 'leaf' || p.kind === 'snow';
+      if (!inLayer) continue;
       const [sx, sy] = this.toScreen(p.x, p.y);
-      ctx.globalAlpha = p.life / p.max;
-      ctx.fillStyle = p.color;
+      const a = p.life / p.max;
+
+      if (p.kind === 'snow') {
+        ctx.globalAlpha = a * 0.9;
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(sx, sy, p.size * this.zoom, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.kind === 'leaf') {
+        ctx.globalAlpha = a;
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(p.spin || 0);
+        ctx.fillStyle = `hsl(${p.hue}, 70%, 50%)`;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, p.size * this.zoom * 1.2, p.size * this.zoom * 0.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      } else if (p.kind === 'blood') {
+        ctx.globalAlpha = a;
+        ctx.fillStyle = '#a02525';
+        ctx.beginPath();
+        ctx.arc(sx, sy, p.size * this.zoom, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.kind === 'graze') {
+        ctx.globalAlpha = a;
+        ctx.fillStyle = '#9ed27a';
+        ctx.beginPath();
+        ctx.arc(sx, sy, p.size * this.zoom, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.kind === 'heart') {
+        ctx.globalAlpha = a;
+        ctx.fillStyle = '#ff85b3';
+        // mini heart
+        const r = p.size * this.zoom;
+        ctx.beginPath();
+        ctx.arc(sx - r * 0.4, sy, r * 0.5, 0, Math.PI * 2);
+        ctx.arc(sx + r * 0.4, sy, r * 0.5, 0, Math.PI * 2);
+        ctx.moveTo(sx - r, sy + r * 0.2);
+        ctx.lineTo(sx, sy + r * 1.1);
+        ctx.lineTo(sx + r, sy + r * 0.2);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  _spawnSeasonal(fx) {
+    const w = this.world;
+    const season = w.seasonName();
+    if (season !== this._lastSeason) {
+      // light reset of seasonal-only particles to avoid wrong-season carryover
+      this._lastSeason = season;
+    }
+    const isSnowing = season === 'winter';
+    const isLeafing = season === 'autumn';
+    if (!isSnowing && !isLeafing) return;
+    const rate = isSnowing ? 0.25 : 0.10;
+    if (Math.random() < rate) {
+      const x = Math.random() * w.cols;
+      const y = Math.random() * 0.4 * w.rows; // start near top
+      if (isSnowing) fx.spawnSnow(x, y);
+      else           fx.spawnLeaf(x, y);
+    }
+  }
+
+  // ---------- weather ----------
+  _drawWeather(ctx, W, H) {
+    const w = this.world;
+    if (w.weather !== 'rain') return;
+    ctx.strokeStyle = 'rgba(170,200,230,0.55)';
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    for (let i = 0; i < 100; i++) {
+      const x = ((i * 73 + w.tick * 6) % (W + 30)) - 15;
+      const y = ((i * 137 + w.tick * 22) % (H + 40)) - 20;
+      ctx.moveTo(x, y);
+      ctx.lineTo(x - 4, y + 12);
+    }
+    ctx.stroke();
+  }
+
+  // ---------- day/night gradient overlay ----------
+  _drawDayNight(ctx, W, H) {
+    const w = this.world;
+    const dl = w.daylight();
+    if (dl >= 0.97) return;
+    const phase = w.dayPhase();
+    let r = 8, g = 12, b = 30, alpha = (1 - dl) * 0.50;
+    // Warmer dusk/dawn
+    if (phase > 0.65 && phase < 0.78) { r = 50; g = 25; b = 35; alpha *= 0.85; }
+    if (phase > 0.20 && phase < 0.32) { r = 40; g = 30; b = 50; alpha *= 0.85; }
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, `rgba(${r},${g},${b},${alpha})`);
+    grad.addColorStop(1, `rgba(${r},${g},${b},${alpha * 0.6})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // ---------- stars ----------
+  _drawStars(ctx, W, H) {
+    const w = this.world;
+    const dl = w.daylight();
+    if (dl > 0.5) return;
+    const a = (0.5 - dl) * 2;
+    for (const s of this.starField) {
+      if (s.x > W || s.y > H) continue;
+      const tw = 0.5 + 0.5 * Math.sin(w.tick * 0.04 + s.twinkle);
+      ctx.globalAlpha = a * (0.4 + 0.6 * tw);
+      ctx.fillStyle = '#fff';
       ctx.beginPath();
-      ctx.arc(sx, sy, p.size * this.zoom, 0, Math.PI * 2);
+      ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
   }
 
-  _drawDayNight(ctx, W, H) {
+  // ---------- sun / moon ----------
+  _drawCelestial(ctx, W, H) {
     const w = this.world;
-    const dl = w.daylight();
-    if (dl >= 0.95) return;
-    const nightAlpha = (1 - dl) * 0.55;
-    // bluish tint at night, warmer at dawn/dusk
     const phase = w.dayPhase();
-    let r = 8, g = 12, b = 30;
-    if (phase < 0.3 || phase > 0.7) {
-      // dawn/dusk
-      const k = Math.min(Math.abs(phase - 0.3), Math.abs(phase - 0.7));
-      if (k < 0.05) { r = 60; g = 30; b = 30; }
+    // Sun arcs across the top during 0.20..0.80
+    const inDay = phase > 0.20 && phase < 0.80;
+    const t = inDay ? (phase - 0.20) / 0.60 : (phase < 0.20 ? phase + 0.20 : phase - 0.80) / 0.40;
+    const sunX = lerp(W * 0.05, W * 0.95, inDay ? t : t);
+    const sunY = inDay
+      ? H * (0.05 + 0.55 * Math.pow(2 * t - 1, 2))   // parabolic arc
+      : H * (0.10 + 0.50 * Math.pow(2 * t - 1, 2));
+
+    if (inDay) {
+      // sun glow
+      const grad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 60);
+      grad.addColorStop(0, 'rgba(255,240,200,0.8)');
+      grad.addColorStop(1, 'rgba(255,240,200,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(sunX - 70, sunY - 70, 140, 140);
+      ctx.fillStyle = 'rgba(255,235,170,0.95)';
+      ctx.beginPath();
+      ctx.arc(sunX, sunY, 14, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // moon
+      const glow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 50);
+      glow.addColorStop(0, 'rgba(220,230,255,0.5)');
+      glow.addColorStop(1, 'rgba(220,230,255,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(sunX - 60, sunY - 60, 120, 120);
+      ctx.fillStyle = 'rgba(230,235,255,0.95)';
+      ctx.beginPath();
+      ctx.arc(sunX, sunY, 11, 0, Math.PI * 2);
+      ctx.fill();
+      // moon shadow
+      ctx.fillStyle = 'rgba(40,50,80,0.45)';
+      ctx.beginPath();
+      ctx.arc(sunX + 4, sunY - 1, 9, 0, Math.PI * 2);
+      ctx.fill();
     }
-    ctx.fillStyle = `rgba(${r},${g},${b},${nightAlpha})`;
+  }
+
+  // ---------- vignette ----------
+  _drawVignette(ctx, W, H) {
+    const grad = ctx.createRadialGradient(W * 0.5, H * 0.5, Math.min(W, H) * 0.45, W * 0.5, H * 0.5, Math.max(W, H) * 0.75);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.45)');
+    ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W, H);
   }
 
-  _drawWeather(ctx, W, H) {
-    const w = this.world;
-    if (w.weather === 'rain') {
-      ctx.strokeStyle = 'rgba(150,180,220,0.5)';
-      ctx.lineWidth = 1;
-      // pseudo-random streaks based on tick
-      ctx.beginPath();
-      for (let i = 0; i < 80; i++) {
-        const x = ((i * 73 + w.tick * 6) % W);
-        const y = ((i * 137 + w.tick * 18) % H);
-        ctx.moveTo(x, y);
-        ctx.lineTo(x - 3, y + 8);
-      }
-      ctx.stroke();
-    }
-  }
-
+  // ---------- HUD ----------
   _drawHud(ctx, W, H) {
     const w = this.world;
-    const dl = w.daylight();
     const phase = w.dayPhase();
     let timeName = 'night';
     if (phase >= 0.20 && phase < 0.32) timeName = 'dawn';
@@ -407,10 +931,37 @@ export class Renderer {
     else if (phase >= 0.68 && phase < 0.80) timeName = 'dusk';
     const txt = `${w.seasonName().toUpperCase()}  ·  ${timeName}  ·  ${w.weather}  ·  ${w.temperature().toFixed(1)}°`;
     ctx.font = '11px ui-monospace, monospace';
-    const tw = ctx.measureText(txt).width + 16;
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(8, 8, tw, 22);
-    ctx.fillStyle = '#fff';
-    ctx.fillText(txt, 16, 23);
+    const tw = ctx.measureText(txt).width + 18;
+    ctx.fillStyle = 'rgba(8,12,20,0.7)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    this._roundRect(ctx, 10, 10, tw, 24, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#e8eef6';
+    ctx.fillText(txt, 19, 26);
   }
+
+  _roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.arcTo(x + w, y, x + w, y + r, r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+    ctx.lineTo(x + r, y + h);
+    ctx.arcTo(x, y + h, x, y + h - r, r);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.closePath();
+  }
+}
+
+// helper: linear interpolation of 3-vectors
+function lerp3(a, b, t) {
+  return [
+    a[0] + (b[0] - a[0]) * t,
+    a[1] + (b[1] - a[1]) * t,
+    a[2] + (b[2] - a[2]) * t,
+  ];
 }
